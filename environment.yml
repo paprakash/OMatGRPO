@@ -1,0 +1,43 @@
+# Environment of the paper's runs (versions from the conda environment they used).
+#   conda env create -f environment.yml && conda activate omatgrpo && pip install -e .
+# torch-scatter is built against torch 2.7 (pt27cu128) and runs with torch 2.8 here, as in the paper's runs.
+name: omatgrpo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.11
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - --find-links https://data.pyg.org/whl/torch-2.7.0+cu128.html
+      - torch==2.8.0+cu128
+      - torch-scatter==2.1.2+pt27cu128
+      - torch-geometric==2.6.1
+      - lightning==2.5.3
+      - torchdiffeq==0.2.5
+      - torchsde==0.2.6
+      - numpy==2.4.3
+      - scipy==1.16.1
+      - pandas==2.3.2
+      - lmdb==1.7.3
+      - loguru==0.7.3
+      - ase==3.28.0
+      - tqdm==4.67.1
+      - smact==3.2.0
+      - wandb==0.21.1
+      - scikit-learn==1.7.1
+      - matplotlib==3.10.5
+      - pymatgen==2025.6.14
+      - spglib==2.6.0
+      - pyyaml==6.0.2
+      - matminer==0.9.3
+      - jsonargparse==4.40.2          # LightningCLI
+      - fairchem-core==2.19.0
+      - e3nn==0.5.7
+      - torch-sim-atomistic==0.5.2
+      - average-minimum-distance==1.6.1
+      - datasets==4.8.4
+      - huggingface-hub==1.9.0
+      - psutil==7.0.0
+      - safetensors==0.8.0            # added for the released weights; not in the paper environment
+      - pytest==8.4.1

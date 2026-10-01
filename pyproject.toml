@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omatgrpo"
+version = "1.0.0"
+description = "GRPO fine-tuning of an OMatG crystal generator, with RL on the discrete composition channel"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    # OMatG (the vendored omg package)
+    "numpy ~= 2.3",
+    "scipy ~= 1.16",
+    "torch ~= 2.8",
+    "lightning[extra] ~= 2.5",
+    "torch_geometric ~= 2.6",
+    "torch_scatter ~= 2.1",
+    "torchdiffeq ~= 0.2",
+    "torchsde ~= 0.2",
+    "lmdb ~= 1.6",
+    "loguru ~= 0.7",
+    "ase ~= 3.25",
+    "tqdm ~= 4.67",
+    "smact ~= 3.1",
+    "wandb ~= 0.20",
+    "scikit-learn ~= 1.7",
+    "matplotlib ~= 3.10",
+    "pymatgen ~= 2025.6",
+    "spglib ~= 2.6",
+    "pyyaml ~= 6.0",
+    "matminer ~= 0.9",
+    # OMatGRPO reward and training
+    "fairchem-core ~= 2.19",              # UMA potential
+    "torch-sim-atomistic ~= 0.5.2",       # batched FIRE relaxation
+    "average-minimum-distance ~= 1.6",    # creativity term (AMD distance)
+    "pandas >= 2.2",
+    "datasets >= 3.0",                    # LeMat-Bulk-MLIP-Hull
+    "huggingface_hub >= 0.30",
+    "psutil >= 6.0",
+    "safetensors >= 0.4",
+]
+
+[project.optional-dependencies]
+# The evaluation scripts need no extra packages; LeMat-GenBench runs in its own environment
+# (see scripts/eval/run_lemat_genbench.sh).
+eval = []
+dev = ["pytest ~= 8.4", "pyflakes >= 3.0"]
+
+[project.scripts]
+omatgrpo-train = "omg.grpo.train:main"
+omg = "omg.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["omg*"]
+
+[tool.setuptools.package-data]
+omg = ["grpo/element_chem_pot.json", "conf_examples/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "omg/tests"]
+markers = [
+    "gpu: needs a CUDA device",
+    "uma: needs the gated UMA model (Hugging Face token and license acceptance)",
+    "network: downloads data (Hugging Face datasets)",
+]

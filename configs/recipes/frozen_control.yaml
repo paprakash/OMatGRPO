@@ -1,0 +1,37 @@
+# frozen_control: Frozen-composition control: one composition per group sampled from the frozen prior; the policy learns positions and lattice only. Positions-only relaxation, no occurrence, MMD or creativity term.
+# python -m omg.grpo.train --recipe configs/recipes/frozen_control.yaml
+run_name: frozen_control
+fields: pos,cell
+freeze_composition: true
+num_groups: 4
+group_size: 16
+time_grid: 64
+species_eta: 0.0
+rollouts: 750
+inner_epochs: 3
+lr: 0.0001
+alpha_pos: 1.0
+alpha_cell: 1.0
+alpha_species: 1.0
+beta_kl_pos: 0.01
+beta_kl_species: 0.0
+seed: 0
+w_stability: 1.0
+relax: true
+relax_cell: false
+relax_steps: 100
+stability_floor_at_zero: true
+stability_cap: 1.0
+deep_below_hull: -0.1
+sparse_gate: true
+sparse_min_refs: 12
+sparse_route: abstain
+single_element_guard: "off"
+occurrence_discount: false
+occurrence_tol: 3
+occurrence_zero: 6
+w_mmd: 0.0
+mmd_kernel: poly
+mmd_norm: minmax
+w_creat: 0.0
+creat_on_relaxed: false

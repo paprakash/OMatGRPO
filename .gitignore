@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Downloaded and built assets (scripts/download_assets.py, scripts/build_references.py)
+omg/data/*
+!omg/data/README.md
+
+# Outputs of training and evaluation
+outputs/
+wandb/
+lightning_logs/
+cache/
+*.ckpt
+*.safetensors
+*.pt
+*.out
+*.err
+*.log
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store

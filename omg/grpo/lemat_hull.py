@@ -1,0 +1,484 @@
+# Energy-above-hull computation backed by LeMat-Bulk-MLIP-Hull.
+#
+# Source: LeMaterial/lemat-genbench,
+# src/lemat_genbench/preprocess/reference_energies.py (Apache-2.0). Imported
+# into OMatGRPO so the GRPO trajectory analysis can score generated structures
+# against the same MLIP-self-consistent convex hulls used by LeMat-GenBench.
+#
+# The hull algorithm (filter_df, PhaseDiagram, get_decomp_and_e_above_hull) is
+# preserved verbatim. Two plumbing adaptations relative to the upstream file:
+#   1. `from datasets import load_dataset` is lazy-imported inside the
+#      callsites that need it — top-level import would force the dependency on
+#      every importer and is unnecessary for `get_energy_above_hull`'s primary
+#      path once the dataset cache is populated.
+#   2. The `_retrieve_df` HuggingFace-Hub *fallback* filename has been updated
+#      from `threshold_{thr}/{hull_type}_above_hull_dataset.parquet` to
+#      `data/{hull_type}-00000-of-00001.parquet` to match the current
+#      LeMaterial/LeMat-Bulk-MLIP-Hull layout (the primary `load_dataset` path
+#      is unchanged and remains the preferred route).
+#   3. The dataset is pinned to HULL_REVISION, and local copies and the download cache live in
+#      the OMatGRPO data directory (omg/grpo/paths.py) instead of a folder next to the repository.
+#   4. A failed download of the composition matrix raises instead of returning None.
+
+import json
+import os
+from collections import Counter
+from functools import lru_cache
+from pathlib import Path
+
+from omg.grpo.paths import hf_cache_dir, hull_dir
+
+import numpy as np
+import pandas as pd
+from pymatgen.analysis.phase_diagram import PDEntry, PhaseDiagram
+from pymatgen.core import Composition, Element
+from scipy import sparse
+from tqdm import tqdm
+
+CURRENT_FOLDER = os.path.dirname(Path(__file__).resolve())
+
+# Hull reference used for every OMatGRPO run in the paper: LeMaterial/LeMat-Bulk-MLIP-Hull at
+# this revision. Pinned so that a later update of the dataset cannot change the reward.
+HULL_REPO = "LeMaterial/LeMat-Bulk-MLIP-Hull"
+HULL_REVISION = "70d505bb294c16658a9551e2b81ace69a28d9790"
+
+
+def build_formation_energy_reference_file():
+    from datasets import load_dataset
+
+    ds_pbe = load_dataset("LeMaterial/LeMat-Bulk", "compatible_pbe")
+    # ds_pbesol = load_dataset("LeMaterial/LeMat-Bulk", "compatible_pbesol")
+    # ds_scan = load_dataset("LeMaterial/LeMat-Bulk", "compatible_scan")
+
+    data = {
+        "energy": [
+            *[
+                x / z
+                for x, y, z in zip(
+                    ds_pbe["train"]["energy"],
+                    ds_pbe["train"]["nelements"],
+                    ds_pbe["train"]["nsites"],
+                )
+                if y == 1
+            ],
+        ],
+        "composition": [
+            *[
+                [x for x in Composition(Counter(y)).chemical_system_set][0]
+                for x, y in zip(
+                    ds_pbe["train"]["nelements"], ds_pbe["train"]["species_at_sites"]
+                )
+                if x == 1
+            ],
+        ],
+    }
+
+    element_chem_pot = {}
+    for element, energy in (
+        pd.DataFrame(data).groupby("composition").min().to_dict()["energy"].items()
+    ):
+        if element not in element_chem_pot:
+            element_chem_pot[element] = {}
+        element_chem_pot[element]["pbe"] = energy
+
+    json.dump(
+        element_chem_pot,
+        open(os.path.join(CURRENT_FOLDER, "element_chem_pot.json"), "w"),
+    )
+
+
+def get_formation_energy_from_composition_energy(
+    total_energy: float, composition: str | Composition, functional="pbe"
+):
+    element_chem_pot_file = os.path.join(CURRENT_FOLDER, "element_chem_pot.json")
+
+    if not os.path.exists(element_chem_pot_file):
+        raise FileNotFoundError(
+            f"Reference energy file not found: {element_chem_pot_file}. "
+            "Run build_formation_energy_reference_file() first."
+        )
+
+    with open(element_chem_pot_file) as f:
+        element_chem_pot = json.load(f)
+
+    try:
+        res = 0
+        # Handle charged species by converting to neutral elements
+        neutral_composition_dict = {}
+        missing_elements = []
+
+        for element, count in composition.as_dict().items():
+            # Handle charged species by extracting the base element
+            # element can be a string like 'Cs+' or a Species object
+            if isinstance(element, str):
+                # For string-based charged species like 'Cs+', 'Ni2+', extract the base element
+                if "+" in element or "-" in element:
+                    # Extract the base element (everything before the charge)
+                    base_element = element.rstrip("+-0123456789")
+                else:
+                    base_element = element
+            elif hasattr(element, "element"):
+                # For Species objects, extract the base element
+                base_element = element.element
+            else:
+                # For neutral elements
+                base_element = element
+
+            # Check if reference energy is available
+            if base_element not in element_chem_pot:
+                missing_elements.append(base_element)
+                continue
+
+            if functional not in element_chem_pot[base_element]:
+                raise ValueError(
+                    f"Functional '{functional}' not available for element '{base_element}'"
+                )
+
+            # Use neutral element for chemical potential lookup
+            if base_element not in neutral_composition_dict:
+                neutral_composition_dict[base_element] = 0
+            neutral_composition_dict[base_element] += count
+
+        if missing_elements:
+            raise ValueError(
+                f"Missing reference energies for elements: {missing_elements}"
+            )
+
+        res = total_energy - sum(
+            [
+                element_chem_pot[k][functional] * v
+                for k, v in neutral_composition_dict.items()
+            ]
+        )
+        return res
+    except Exception as e:
+        print("Error in get_formation_energy_from_composition_energy: ", e)
+        return None
+
+
+def get_formation_energy_per_atom_from_composition_energy(
+    total_energy, composition, functional="pbe"
+):
+    """Calculate formation energy per atom from total energy and composition.
+
+    This function properly handles charged species by converting them
+    to neutral elements before looking up reference chemical potentials.
+
+    Parameters
+    ----------
+    total_energy : float
+        Total energy in eV
+    composition : Composition
+        Pymatgen composition object (may contain charged species)
+    functional : str, optional
+        DFT functional to use for reference energies (default is "pbe")
+
+    Returns
+    -------
+    float
+        Formation energy per atom in eV/atom (intensive property, normalized per atom)
+
+    Notes
+    -----
+    This follows Materials Project conventions for formation energy.
+    """
+
+    try:
+        formation_energy = get_formation_energy_from_composition_energy(
+            total_energy, composition, functional=functional
+        )
+        composition = Composition(composition)  # Ensure it's a Composition object
+        formation_energy = formation_energy / composition.num_atoms
+        if formation_energy is None:
+            raise ValueError("Formation energy calculation returned None")
+        return formation_energy
+    except Exception as e:
+        raise ValueError(
+            f"Failed to compute formation energy for {composition.formula}: {str(e)}"
+        ) from e
+
+
+def one_hot_encode_composition(elements):
+    one_hot = np.zeros(
+        119
+    )  # 119 to use direct Z indexing (0 unused, 1-118 for elements)
+    for element in elements:
+        try:
+            # Handle charged species by extracting the base element
+            if isinstance(element, str):
+                # For string-based charged species like 'Cs+', 'Ni2+', extract the base element
+                if "+" in element or "-" in element:
+                    # Extract the base element (everything before the charge)
+                    base_element = element.rstrip("+-0123456789")
+                else:
+                    base_element = element
+            elif hasattr(element, "element"):
+                # For Species objects, extract the base element
+                base_element = element.element
+            else:
+                # For neutral elements
+                base_element = element
+
+            # Validate element and get atomic number
+            element_obj = Element(base_element)
+            one_hot[int(element_obj.number)] = 1
+        except ValueError as e:
+            print(f"Warning: Invalid element '{element}': {e}")
+            continue
+    return one_hot
+
+
+def process_chunk(chunk):
+    one_hot_compositions = []
+    for elements in tqdm(chunk):
+        one_hot_compositions.append(one_hot_encode_composition(elements))
+    return one_hot_compositions
+
+
+@lru_cache(maxsize=None)
+def _retrieve_df(hull_type="dft", threshold=0.001):
+    """Retrieve dataset for hull computations.
+
+    Parameters
+    ----------
+    hull_type : str, optional
+        Type of hull to use ('dft', 'orb', 'uma', 'mace_mp', 'mace_omat')
+        Default is 'dft' for backward compatibility
+    threshold : float, optional
+        Energy above hull threshold in eV/atom (default 0.001)
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataset of materials close to the hull
+    """
+    try:
+        threshold_str = f"{threshold:.3f}".replace(".", "_")
+
+        # Try a local copy first (<data_dir>/convex_hulls, see omg/grpo/paths.py)
+        local_hull_path = os.path.join(
+            str(hull_dir()), f"{hull_type}_above_hull_dataset.parquet",
+        )
+
+        if os.path.exists(local_hull_path):
+            dataset = pd.read_parquet(local_hull_path)
+            if "elements" in dataset.columns:
+                dataset["elements"] = dataset["elements"].apply(
+                    lambda x: x.tolist() if hasattr(x, "tolist") else x
+                )
+            if "species_at_sites" in dataset.columns:
+                dataset["species_at_sites"] = dataset["species_at_sites"].apply(
+                    lambda x: x.tolist() if hasattr(x, "tolist") else x
+                )
+            return dataset
+
+        try:
+            from datasets import load_dataset
+
+            dataset_dict = load_dataset(HULL_REPO, revision=HULL_REVISION)
+
+            if hull_type in dataset_dict:
+                dataset = dataset_dict[hull_type].to_pandas()
+                # species_at_sites should already be lists in the new format
+                # but we'll still check just in case
+                if "species_at_sites" in dataset.columns:
+                    dataset["species_at_sites"] = dataset["species_at_sites"].apply(
+                        lambda x: x.tolist() if hasattr(x, "tolist") else x
+                    )
+                return dataset
+        except Exception:
+            pass
+
+        # Fall back to file-based approach
+        from huggingface_hub import hf_hub_download
+
+        file_path = hf_hub_download(
+            repo_id=HULL_REPO,
+            filename=f"data/{hull_type}-00000-of-00001.parquet",
+            repo_type="dataset",
+            revision=HULL_REVISION,
+            cache_dir=str(hf_cache_dir()),
+        )
+        dataset = pd.read_parquet(file_path)
+        if "elements" in dataset.columns:
+            dataset["elements"] = dataset["elements"].apply(
+                lambda x: x.tolist() if hasattr(x, "tolist") else x
+            )
+        if "species_at_sites" in dataset.columns:
+            dataset["species_at_sites"] = dataset["species_at_sites"].apply(
+                lambda x: x.tolist() if hasattr(x, "tolist") else x
+            )
+        return dataset
+    except Exception as e:
+        raise RuntimeError(
+            f"Hull-specific dataset not found for hull type '{hull_type}' and threshold {threshold}. "
+            "Tried local path and HuggingFace Hub."
+            f" Error: {e}"
+        )
+
+
+@lru_cache(maxsize=None)
+def _retrieve_matrix(hull_type="dft", threshold=0.001):
+    """Retrieve composition matrix for hull computations.
+
+    Parameters
+    ----------
+    hull_type : str, optional
+        Type of hull to use ('dft', 'orb', 'uma', 'mace_mp', 'mace_omat')
+        Default is 'dft' for backward compatibility
+    threshold : float, optional
+        Energy above hull threshold in eV/atom (default 0.001)
+
+    Returns
+    -------
+    np.ndarray
+        Composition matrix
+    """
+    try:
+        threshold_str = f"{threshold:.3f}".replace(".", "_")
+
+        local_hull_path = os.path.join(
+            str(hull_dir()), f"{hull_type}_above_hull_composition_matrix.npz",
+        )
+
+        if os.path.exists(local_hull_path):
+            composition_array = sparse.load_npz(local_hull_path).toarray()
+            return composition_array
+
+        # otherwise fetch from HuggingFace Hub with hull type
+        try:
+            from huggingface_hub import hf_hub_download
+
+            file_path = hf_hub_download(
+                repo_id=HULL_REPO,
+                filename=f"threshold_{threshold_str}/{hull_type}_above_hull_composition_matrix.npz",
+                repo_type="dataset",
+                revision=HULL_REVISION,
+                cache_dir=str(hf_cache_dir()),
+            )
+            composition_array = sparse.load_npz(file_path).toarray()
+            return composition_array
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not download the hull composition matrix from {HULL_REPO} "
+                f"(revision {HULL_REVISION}): {e}. Check Hugging Face access."
+            ) from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to load composition matrix: {e}") from e
+
+
+def filter_df(df, matrix, composition):
+    try:
+        structure_vector = one_hot_encode_composition(composition.elements).reshape(
+            -1, 1
+        )
+        forbidden_elements = 1 - structure_vector
+        intersection_elements = df.loc[(matrix @ forbidden_elements) == 0]
+
+        if intersection_elements.empty:
+            print(
+                f"Warning: No reference structures found for composition {composition.formula}"
+            )
+
+        return intersection_elements
+    except Exception as e:
+        raise ValueError(f"Failed to filter reference dataset: {e}") from e
+
+
+def get_energy_above_hull(total_energy, composition, hull_type="dft", threshold=0.001,
+                          return_ref_count=False):
+    """Calculate energy above hull from total energy and composition.
+
+    This function properly handles charged species by converting them
+    to neutral elements before creating PDEntry objects.
+
+    Parameters
+    ----------
+    total_energy : float
+        Total energy in eV
+    composition : Composition
+        Pymatgen composition object (may contain charged species)
+    hull_type : str, optional
+        Type of hull to use ('dft', 'orb', 'uma', 'mace_mp', 'mace_omat')
+        Default is 'dft' for backward compatibility
+    threshold : float, optional
+        Energy above hull threshold in eV/atom for reference dataset (default 0.001)
+    return_ref_count : bool, optional
+        If True, return (e_above_hull, ref_count) where ref_count is the number of
+        reference entries (PDEntries) the convex hull was built from for this
+        composition's chemical subsystem. A small ref_count means the hull is sparsely
+        constrained there → a claimed below-hull (E_hull<0) is untrustworthy. Default
+        False returns the float only. Used by the sparse-hull guard of the reward.
+
+    Returns
+    -------
+    float, or (float, int)
+        Energy above hull in eV/atom (intensive property, normalized per atom);
+        with return_ref_count=True, also the reference-entry count.
+
+    Notes
+    -----
+    Pymatgen's get_decomp_and_e_above_hull() always returns eV/atom,
+    making this an intensive property like formation energy.
+    This follows Materials Project conventions.
+    """
+
+    try:
+        intersection_elements = filter_df(
+            _retrieve_df(hull_type, threshold),
+            _retrieve_matrix(hull_type, threshold),
+            composition,
+        )
+
+        # Create PDEntries from the filtered DataFrame
+        # using species_at_sites for composition because no ambiguity there
+        pd_entries = [
+            PDEntry(Composition(Counter(row["species_at_sites"])), row["energy"])
+            for _, row in intersection_elements.iterrows()
+        ]
+
+        if not pd_entries:
+            raise ValueError(
+                f"No entries found in dataset containing any of the elements in: {composition.elements}"
+            )
+
+        # Construct phase diagram
+        pd = PhaseDiagram(pd_entries)
+
+        # Convert charged species to neutral composition for PDEntry creation
+        # This follows the same logic as get_formation_energy_from_composition_energy
+        neutral_composition_dict = {}
+        for element, count in composition.as_dict().items():
+            # Handle charged species by extracting the base element
+            if isinstance(element, str):
+                # For string-based charged species like 'Cs+', 'Ni2+', extract the base element
+                if "+" in element or "-" in element:
+                    # Extract the base element (everything before the charge)
+                    base_element = element.rstrip("+-0123456789")
+                else:
+                    base_element = element
+            elif hasattr(element, "element"):
+                # For Species objects, extract the base element
+                base_element = element.element
+            else:
+                # For neutral elements
+                base_element = element
+
+            # Use neutral element for PDEntry creation
+            if base_element not in neutral_composition_dict:
+                neutral_composition_dict[base_element] = 0
+            neutral_composition_dict[base_element] += count
+
+        neutral_composition = Composition(neutral_composition_dict)
+
+        entry = PDEntry(neutral_composition, total_energy)
+        e_above_hull = pd.get_decomp_and_e_above_hull(entry, allow_negative=True)[1]
+
+        if return_ref_count:
+            return e_above_hull, len(pd_entries)
+        return e_above_hull
+
+    except Exception as e:
+        raise ValueError(
+            f"Failed to compute energy above hull for {composition.formula}: {str(e)}"
+        ) from e

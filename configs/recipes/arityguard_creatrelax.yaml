@@ -1,0 +1,37 @@
+# arityguard_creatrelax: OMatGRPO: abstention on sparse hulls, single-element guard, creativity on relaxed structures.
+# python -m omg.grpo.train --recipe configs/recipes/arityguard_creatrelax.yaml
+run_name: arityguard_creatrelax
+fields: pos,cell,species
+freeze_composition: false
+num_groups: 4
+group_size: 16
+time_grid: 64
+species_eta: 0.0
+rollouts: 750
+inner_epochs: 3
+lr: 0.0001
+alpha_pos: 0.1
+alpha_cell: 0.1
+alpha_species: 1.0
+beta_kl_pos: 0.01
+beta_kl_species: 0.05
+seed: 0
+w_stability: 1.0
+relax: true
+relax_cell: true
+relax_steps: 100
+stability_floor_at_zero: true
+stability_cap: 1.0
+deep_below_hull: -0.1
+sparse_gate: true
+sparse_min_refs: 12
+sparse_route: abstain
+single_element_guard: "on"
+occurrence_discount: true
+occurrence_tol: 3
+occurrence_zero: 6
+w_mmd: 0.4
+mmd_kernel: poly
+mmd_norm: minmax
+w_creat: 1.0
+creat_on_relaxed: true

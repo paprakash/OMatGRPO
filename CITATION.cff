@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use OMatGRPO, please cite the paper below and OMatG."
+title: "OMatGRPO"
+type: software
+license: MIT
+repository-code: "TODO: public repository URL"
+authors: &authors
+  - family-names: Prakash
+    given-names: Pawan
+    affiliation: "University of Florida; Oak Ridge National Laboratory"
+  - family-names: Höllmer
+    given-names: Philipp
+    affiliation: "New York University"
+  - family-names: Fuhr
+    given-names: Addis
+    affiliation: "Oak Ridge National Laboratory"
+  - family-names: Hirschfeld
+    given-names: Peter
+    affiliation: "University of Florida"
+  - family-names: Ganesh
+    given-names: P.
+    affiliation: "Oak Ridge National Laboratory"
+  - family-names: Martiniani
+    given-names: Stefano
+    affiliation: "New York University"
+  - family-names: Hennig
+    given-names: Richard
+    affiliation: "University of Florida"
+preferred-citation:
+  type: article
+  title: "Reinforcement Learning on the Discrete Composition Channel of a Crystal Generator: Validated Gains and Reward Hacking"
+  authors: *authors
+  journal: "arXiv preprint"
+  year: 2026
+  url: "https://arxiv.org/abs/TODO"   # TODO: arXiv identifier
