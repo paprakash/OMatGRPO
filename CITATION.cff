@@ -3,7 +3,7 @@ message: "If you use OMatGRPO, please cite the paper below and OMatG."
 title: "OMatGRPO"
 type: software
 license: MIT
-repository-code: "TODO: public repository URL"
+repository-code: "https://github.com/paprakash/OMatGRPO"
 authors: &authors
   - family-names: Prakash
     given-names: Pawan
@@ -33,3 +33,41 @@ preferred-citation:
   journal: "arXiv preprint"
   year: 2026
   url: "https://arxiv.org/abs/TODO"   # TODO: arXiv identifier
+references:
+  - type: conference-paper
+    title: "Open Materials Generation with Stochastic Interpolants"
+    authors:
+      - family-names: Höllmer
+        given-names: "Philipp"
+      - family-names: Egg
+        given-names: "Thomas"
+      - family-names: Martirossyan
+        given-names: "Maya"
+      - family-names: Fuemmeler
+        given-names: "Eric"
+      - family-names: Shui
+        given-names: "Zeren"
+      - family-names: Gupta
+        given-names: "Amit"
+      - family-names: Prakash
+        given-names: "Pawan"
+      - family-names: Roitberg
+        given-names: "Adrian"
+      - family-names: Liu
+        given-names: "Mingjie"
+      - family-names: Karypis
+        given-names: "George"
+      - family-names: Transtrum
+        given-names: "Mark"
+      - family-names: Hennig
+        given-names: "Richard"
+      - family-names: Tadmor
+        given-names: "Ellad B."
+      - family-names: Martiniani
+        given-names: "Stefano"
+    collection-title: "Forty-second International Conference on Machine Learning"
+    year: 2025
+    url: "https://openreview.net/forum?id=gHGrzxFujU"
+    identifiers:
+      - type: other
+        value: "arXiv:2502.02582"
