@@ -11,8 +11,9 @@ downloaded: build them with scripts/build_references.py after this script.
   models      <data_dir>/models/<identifier>/final_model.safetensors and resolved_config.json for the
               seven runs of the paper (or the ones given with --models)
   structures  <data_dir>/structures/<identifier>/: the 2,500-structure sets that LeMat-GenBench scored
-              for the paper (CIFs, structures_summary.csv, LeMat-GenBench result JSON), for the prior
-              (R0), best-of-N and the seven runs (or the ones given with --structures)
+              for the paper (cifs.zip, unpacked into cifs/, structures_summary.csv and the LeMat-GenBench
+              result JSON), for the prior (R0), best-of-N and the seven runs (or the ones given with
+              --structures)
 
 Default: prior and mp20. The data directory is --data_dir, else $OMATGRPO_DATA_DIR, else omg/data.
 Files already present with the right sha256 are skipped; a file with the wrong sha256 is an error and
@@ -28,6 +29,7 @@ import shutil
 import sys
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -76,8 +78,8 @@ MODEL_FILES = {
         "resolved_config.json": "f9db6397cfef0eba68260b6e8b93c795f8c560b01e8d581af48af279f121bbea",
     },
 }
-# identifier -> file in structures/<identifier>/ -> sha256 (the CIFs in structures/<identifier>/cifs/ are
-# checked against the repository's SHA256SUMS, whose entries for these files must match the values here)
+# identifier -> file in structures/<identifier>/ -> sha256 (structures/<identifier>/cifs.zip is checked
+# against the repository's SHA256SUMS, whose entries for these files must match the values here)
 STRUCTURE_FILES = {
     "R0": {
         "R0_comprehensive_multi_mlip_hull_20260807_034204.json": "d7788416f35a0429667db097efc575fa5607a20a8d80124233c9afb4d127a26e",
@@ -182,30 +184,42 @@ def read_sha256sums(path) -> dict:
 
 
 def fetch_structures(ident: str, root: Path, repo: str, revision: str):
-    """One structure set: the pinned summary and JSON, and every CIF listed in the repository's SHA256SUMS."""
-    from huggingface_hub import hf_hub_download, snapshot_download
+    """One structure set: cifs.zip, unpacked into cifs/, and the pinned summary and result JSON.
+
+    The sha256 of cifs.zip comes from the repository's SHA256SUMS, whose entries for the pinned files must
+    match the values in STRUCTURE_FILES. The CIFs are zipped because a Hugging Face repository holds at
+    most 20,000 files.
+    """
+    from huggingface_hub import hf_hub_download
     prefix = f"structures/{ident}/"
     with tempfile.TemporaryDirectory(dir=root) as tmpdir:
         sums = read_sha256sums(hf_hub_download(repo_id=repo, filename="SHA256SUMS", revision=revision,
                                                local_dir=tmpdir))
-        for name, expected in STRUCTURE_FILES[ident].items():
-            if sums.get(prefix + name) != expected:
-                raise SystemExit(f"{repo} SHA256SUMS does not list {prefix + name} with the pinned sha256")
-        wanted = {rel: h for rel, h in sums.items() if rel.startswith(prefix)}
-        if all((root / rel).exists() and sha256(root / rel) == h for rel, h in wanted.items()):
-            print(f"ok (present)  {root / prefix} ({len(wanted)} files)")
-            return
-        snap = Path(snapshot_download(repo_id=repo, revision=revision, allow_patterns=[prefix + "*"],
-                                      local_dir=Path(tmpdir) / "snap"))
-        for rel, expected in wanted.items():
-            got = sha256(snap / rel)
-            if got != expected:
-                raise SystemExit(f"{repo}/{rel}: sha256 {got}, expected {expected}")
-        dest = root / prefix
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.move(str(snap / prefix), str(dest))
-        print(f"ok            {dest} ({len(wanted)} files)")
+    for name, expected in STRUCTURE_FILES[ident].items():
+        if sums.get(prefix + name) != expected:
+            raise SystemExit(f"{repo} SHA256SUMS does not list {prefix + name} with the pinned sha256")
+    if prefix + "cifs.zip" not in sums:
+        raise SystemExit(f"{repo} SHA256SUMS does not list {prefix}cifs.zip")
+    fetch_hf(prefix + "cifs.zip", sums[prefix + "cifs.zip"], root, repo, revision)
+    for name, expected in STRUCTURE_FILES[ident].items():
+        fetch_hf(prefix + name, expected, root, repo, revision)
+    unpack_cifs(root / prefix)
+
+
+def unpack_cifs(set_dir: Path):
+    """Unpack set_dir/cifs.zip (members cifs/<name>.cif) into set_dir/cifs/, replacing an existing cifs/."""
+    with zipfile.ZipFile(set_dir / "cifs.zip") as z:
+        names = [n for n in z.namelist() if n != "cifs/"]
+        bad = [n for n in names if not (n.startswith("cifs/") and n.endswith(".cif") and n.count("/") == 1)]
+        if bad:
+            raise SystemExit(f"{set_dir / 'cifs.zip'}: unexpected members {bad[:3]}")
+        with tempfile.TemporaryDirectory(dir=set_dir) as tmpdir:
+            z.extractall(tmpdir, members=names)
+            dest = set_dir / "cifs"
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.move(str(Path(tmpdir) / "cifs"), str(dest))
+    print(f"ok            {dest} ({len(names)} CIFs)")
 
 
 def main():
