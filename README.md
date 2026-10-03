@@ -141,13 +141,17 @@ Please cite the paper and OMatG.
     year={2026},
 }
 
-@article{hoellmer2025,
+@inproceedings{hoellmer2025,
     title={Open Materials Generation with Stochastic Interpolants},
     author={Philipp H{\"o}llmer and Thomas Egg and Maya Martirossyan and Eric
     Fuemmeler and Zeren Shui and Amit Gupta and Pawan Prakash and Adrian
     Roitberg and Mingjie Liu and George Karypis and Mark Transtrum and Richard
     Hennig and Ellad B. Tadmor and Stefano Martiniani},
-    journal={arXiv preprint arXiv:2502.02582},
+    booktitle={Forty-second International Conference on Machine Learning},
     year={2025},
+    url={https://openreview.net/forum?id=gHGrzxFujU},
+    archivePrefix={arXiv},
+    eprint={2502.02582},
+    primaryClass={cs.LG},
 }
 ```
