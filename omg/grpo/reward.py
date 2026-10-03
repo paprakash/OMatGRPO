@@ -8,6 +8,7 @@ from torch_sim.models.fairchem import FairChemModel
 from pymatgen.io.ase import AseAtomsAdaptor
 import numpy as np
 import gc
+import copy
 from pymatgen.core.periodic_table import Element
 from pymatgen.core import Lattice, Structure
 import signal
@@ -231,7 +232,7 @@ def _apply_mask_guard(specie_array):
 
 
 class OMatGRPOReward:
-    def __init__(self, device='cuda', relax_before_reward=False, relax_max_steps=100, w_ehull=1.0, ehull_mag_floor=-0.1, ehull_min_refset=12, ehull_sparse_gate=False, sparse_route='worst', ehull_floor_at_zero=False, ehull_cap=5.0, relax_cell_dof=False, route_elemental='off', w_creat=0.0, creativity_reference=None, creativity_sm_timeout=3.0, creativity_amd_k=100, creat_on_relaxed=False):
+    def __init__(self, weights=None, reward_offset=0.3, fmax=10.0, fmax_schedule=None, device='cuda', reward_type='absolute', relax_before_reward=False, relax_max_steps=100, w_rmsd_geom=0.0, rmsd_geom_clamp=3.0, w_ehull=1.0, ehull_mag_floor=-0.1, ehull_min_refset=12, ehull_sparse_gate=False, sparse_route='worst', ehull_floor_at_zero=False, ehull_cap=5.0, relax_cell_dof=False, route_elemental='off', w_creat=0.0, creativity_reference=None, creativity_sm_timeout=3.0, creativity_amd_k=100, creat_on_relaxed=False):
 
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
@@ -255,12 +256,23 @@ class OMatGRPOReward:
                 task_name="omat",
             )
 
+        self.fmax = float(fmax)
+        self.fmax_schedule = fmax_schedule  # e.g. [(0, 10.0), (1000, 5.0), (3000, 1.0)] or None
+        self._current_step = 0  # updated by training_step before each call
+        
         # gen will be set when __call__ is invoked
         self.gen = None
         self.atoms = []
         self.structures = []
         self.group = []
         self.score_details = {}  # Will be populated in calculate_rewards
+        # weights['energy'|'rmsd'] only select which reward paths run (see calculate_rewards);
+        # w_ehull / w_rmsd_geom are the per-term weights. The formation and absolute energy
+        # rewards are variants from the reward-hacking appendix.
+        self.weights = weights
+        if self.weights is None:
+            self.weights = {'rmsd': 0.0, 'energy': 1.0}
+        self.reward_offset = reward_offset
         # Bulk-crystal per-element reference energies, ported from LeMat-GenBench's
         # reference_energies.py (omg/grpo/lemat_hull.py, element_chem_pot.json). Isolated-atom
         # references must not be used: they give cohesive-energy-like values about 7 eV/atom
@@ -278,17 +290,32 @@ class OMatGRPOReward:
                 self._form_refs_available = True
                 print(f"[reward] LeMat-GenBench bulk-crystal refs ready: {chem_pot_path}")
             else:
-                print(f"[reward] WARNING: element_chem_pot.json missing at {chem_pot_path} — formation-energy logging disabled")
+                print(f"[reward] WARNING: element_chem_pot.json missing at {chem_pot_path} — formation reward disabled")
         except Exception as e:
             print(f"[reward] Could not import lemat_hull formation-energy fn: {e}")
             self._form_refs_available = False
 
-        # Stability term: -E_hull, routed and clamped (see _route_and_clamp_ehull), against the
-        # LeMat-Bulk UMA hull (omg.grpo.lemat_hull.get_energy_above_hull). Lower E_hull = closer
-        # to the hull = higher reward. The formation and absolute energy rewards of the paper's
-        # reward-hacking appendix are on the reward-hacking branch.
+        # Reward signal:
+        #   'e_hull'    = -E_hull, routed and clamped (see _route_and_clamp_ehull); uses the
+        #                 LeMat-Bulk UMA hull via omg.grpo.lemat_hull.get_energy_above_hull.
+        #                 Lower E_hull = closer to the hull = higher reward.
+        #   'absolute'  = -E/atom clamped to [-20, 20]     (reward-hacking appendix)
+        #   'formation' = -E_form/atom clamped to [-10, 10] (reward-hacking appendix)
+        self.reward_type = reward_type
+        if self.reward_type == 'formation' and not self._form_refs_available:
+            raise ValueError(
+                "reward_type='formation' requires omg/grpo/element_chem_pot.json "
+                "(LeMat-GenBench bulk-crystal PBE refs). Pull from "
+                "https://raw.githubusercontent.com/LeMaterial/lemat-genbench/main/"
+                "src/lemat_genbench/preprocess/element_chem_pot.json"
+            )
+        if self.reward_type not in ('absolute', 'formation', 'e_hull'):
+            raise ValueError(
+                f"reward_type must be one of {{absolute, formation, e_hull}}; got {self.reward_type!r}"
+            )
+        print(f"[reward] reward_type={self.reward_type}")
 
-        # Relaxation before scoring: FIRE, force_tol 0.05, at most
+        # Relaxation before scoring (e_hull reward only): FIRE, force_tol 0.05, at most
         # relax_max_steps steps (a full relaxation of B*K structures every rollout is too
         # costly), positions only or with the cell (relax_cell_dof). Scoring the relaxed
         # structure rewards the basin the generator lands in rather than the raw sample.
@@ -298,8 +325,13 @@ class OMatGRPOReward:
         self.last_relax_delta_e = []
         if self.relax_before_reward:
             print(f"[reward] relax_before_reward=True (relax_max_steps={self.relax_max_steps}, "
-                  f"FIRE force_tol=0.05, cell {'included' if self.relax_cell_dof else 'fixed'})")
+                  f"FIRE force_tol=0.05, cell {'included' if self.relax_cell_dof else 'fixed'}); "
+                  f"applies to reward_type='e_hull'")
 
+        # Residual geometry term (reward-hacking appendix): adds -w_rmsd_geom * clamp(RMSD(gen, relaxed)),
+        # reusing the relaxation above (last_relax_rmsd). 0 = off.
+        self.w_rmsd_geom = float(w_rmsd_geom)
+        self.rmsd_geom_clamp = float(rmsd_geom_clamp)
         # Weight of the stability (E_hull) term. 0 turns the term off, and with it every guard
         # penalty, because all penalties live inside this term.
         self.w_ehull = float(w_ehull)
@@ -360,20 +392,29 @@ class OMatGRPOReward:
         self.last_sparse_neutral_fraction = 0.0
         # Per-structure clamped term magnitudes for within-group-std logging (set per call).
         self.last_ehull_clamped_term = []
-        print(f"[reward] e_hull below-hull guard: trust E_hull<0 only if "
-              f"E_hull>={self.ehull_mag_floor:g} AND ref_set>={self.ehull_min_refset} "
-              f"(else → worst reward).")
-        print(f"[reward] e_hull sparse-hull gate: {self.ehull_sparse_gate} "
-              f"(when True, ref_set<{self.ehull_min_refset} is untrusted for both E_hull signs).")
-        print(f"[reward] sparse_route={self.sparse_route} "
-              f"({'sparse hull -> abstain (zero advantage); deep below hull -> penalty' if self.sparse_route=='neutral' else 'sparse hull -> penalty'}).")
-        print(f"[reward] route_elemental={self.route_elemental} "
-              f"({'single-element -> penalty' if self.route_elemental=='worst' else 'single-element guard off'}).")
-        print(f"[reward] ehull_floor_at_zero={self.ehull_floor_at_zero} ehull_cap={self.ehull_cap:g} "
-              f"(term = clamp(E_hull, {'0' if self.ehull_floor_at_zero else '-inf'}, {self.ehull_cap:g}); "
-              f"penalized and failed structures -> cap).")
+        self.last_rmsd_geom_clamped = []
+        if self.reward_type == 'e_hull':
+            print(f"[reward] e_hull below-hull guard: trust E_hull<0 only if "
+                  f"E_hull>={self.ehull_mag_floor:g} AND ref_set>={self.ehull_min_refset} "
+                  f"(else → worst reward).")
+            print(f"[reward] e_hull sparse-hull gate: {self.ehull_sparse_gate} "
+                  f"(when True, ref_set<{self.ehull_min_refset} is untrusted for both E_hull signs).")
+            print(f"[reward] sparse_route={self.sparse_route} "
+                  f"({'sparse hull -> abstain (zero advantage); deep below hull -> penalty' if self.sparse_route=='neutral' else 'sparse hull -> penalty'}).")
+            print(f"[reward] route_elemental={self.route_elemental} "
+                  f"({'single-element -> penalty' if self.route_elemental=='worst' else 'single-element guard off'}).")
+            print(f"[reward] ehull_floor_at_zero={self.ehull_floor_at_zero} ehull_cap={self.ehull_cap:g} "
+                  f"(term = clamp(E_hull, {'0' if self.ehull_floor_at_zero else '-inf'}, {self.ehull_cap:g}); "
+                  f"penalized and failed structures -> cap).")
+        if self.w_rmsd_geom > 0.0:
+            print(f"[reward] combined reward: {self.w_ehull:g}*(-E_hull) + {self.w_rmsd_geom:g}*(-RMSD(gen,relaxed)) "
+                  f"clamped to [0,{self.rmsd_geom_clamp:g}] Å (reward_type='e_hull')")
+            if not self.relax_before_reward:
+                print("[reward] WARNING: w_rmsd_geom>0 but relax_before_reward=False — "
+                      "last_relax_rmsd will be all-NaN → constant worst penalty (no signal).")
         if self.w_ehull == 0.0:
-            print("[reward] w_ehull=0.0 → E_hull term zeroed (the relaxation and hull lookup still run).")
+            print("[reward] w_ehull=0.0 → E_hull term zeroed (RMSD-only reward; relax path still runs "
+                  "via weights['energy']>0).")
 
         # Creativity term (following Chemeleon2), additive: combined += w_creat * creativity,
         # creativity in [0, 1] per structure (see CreativityReward). With w_creat=0 the
@@ -388,11 +429,17 @@ class OMatGRPOReward:
         self.creat_on_relaxed = bool(creat_on_relaxed)
         self.last_relaxed_structures = []
         self.last_creat_relax_fallback = 0
-        if self.creat_on_relaxed and not self.relax_before_reward:
-            raise ValueError(
-                "creat_on_relaxed=True requires relax_before_reward=True — the term must "
-                "never silently score unrelaxed geometry when the flag is on."
-            )
+        if self.creat_on_relaxed:
+            if not (self.relax_before_reward
+                    and float(self.weights.get('energy', 0.0)) > 0.0
+                    and self.reward_type == 'e_hull'):
+                raise ValueError(
+                    "creat_on_relaxed=True requires relax_before_reward=True, "
+                    "weights['energy']>0 and reward_type='e_hull' — the term must "
+                    "never silently score unrelaxed geometry when the flag is on. "
+                    f"Got relax_before_reward={relax_before_reward}, "
+                    f"weights={weights}, reward_type={reward_type!r}."
+                )
         if self.w_creat > 0.0:
             self._creativity = CreativityReward(
                 reference_path=creativity_reference,
@@ -403,6 +450,82 @@ class OMatGRPOReward:
                   f"(unique∧novel=1, neither=0, mixed=min-AMD clamp[0,1]; "
                   f"per-structure SM timeout {self._creativity.sm_timeout}s → 0; "
                   f"creat_on_relaxed={self.creat_on_relaxed})")
+
+    def _get_current_fmax(self):
+        """Look up fmax from schedule based on current training step."""
+        if self.fmax_schedule is None:
+            return self.fmax
+        # fmax_schedule is list of (step_threshold, fmax_value), sorted ascending
+        # Use the last entry whose threshold we've passed
+        current_fmax = self.fmax  # fallback
+        for step_thresh, fmax_val in self.fmax_schedule:
+            if self._current_step >= step_thresh:
+                current_fmax = fmax_val
+            else:
+                break
+        return current_fmax
+    
+    def calculate_rmsd(self, unrelaxed, relaxed):
+        unrelaxed_coords = torch.tensor(unrelaxed.get_positions())
+        relaxed_coords = torch.tensor(relaxed.get_positions())
+        if unrelaxed_coords.shape != relaxed_coords.shape:
+            raise ValueError("Structures must have the same number of atoms and dimensions")
+
+        diff_coords = unrelaxed_coords - relaxed_coords
+        diff_coords= diff_coords - torch.round(diff_coords)
+        rmsd = torch.sqrt(torch.mean(torch.sum(diff_coords**2, dim=1)))
+        return rmsd
+
+
+    def calculate_batch_rmsd(self, unrelaxed_list, relaxed_list):
+        if len(unrelaxed_list) != len(relaxed_list):
+            raise ValueError("Unrelaxed and relaxed lists must have the same length")
+
+        rmsds = []
+        for u, r in zip(unrelaxed_list, relaxed_list):
+            rmsds.append(self.calculate_rmsd(u, r))
+
+        return torch.tensor(rmsds)
+
+    def calculate_batch_rmsd_reward(self, group, reward_type):
+        # Displacement reward (reward-hacking appendix). The masked-species guard is not applied on this path.
+        unrelaxed_structures = [copy.deepcopy(i) for i in group]
+        unrelaxed_atoms = [AseAtomsAdaptor.get_atoms(i) for i in unrelaxed_structures]
+
+        current_fmax = self._get_current_fmax()
+
+        try:
+            with timeout(900):
+                relaxed_state = ts.optimize(
+                    system=unrelaxed_atoms,
+                    model=self._torchsim_model,
+                    optimizer=ts.Optimizer.fire,
+                    convergence_fn=ts.generate_force_convergence_fn(force_tol=current_fmax),
+                    max_steps=1000,
+                )
+            relaxed = relaxed_state.to_atoms()
+        except RuntimeError as e:
+            print(f"[RMSD reward] RuntimeError in ts.optimize, assigning worst reward: {e}")
+            worst = torch.log(torch.tensor(1.0 + self.reward_offset)) - torch.log(torch.tensor(100.0))
+            self.rmsd_rewards = torch.full((len(unrelaxed_atoms),), worst.item()) * self.weights.get('rmsd', 1.0)
+            gc.collect()
+            torch.cuda.empty_cache()
+            return self.rmsd_rewards
+        rmsds = self.calculate_batch_rmsd(unrelaxed_atoms, relaxed)
+
+        print('RMSDS:', rmsds)
+        self.rmsd_rewards = torch.tensor(
+        [torch.log(torch.tensor(1.0 + self.reward_offset)) - torch.log(i + 1) for i in rmsds]
+        ) * self.weights[reward_type]
+
+        del unrelaxed_structures
+        del unrelaxed_atoms
+        del relaxed_state
+        del relaxed
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return self.rmsd_rewards
 
     def _route_and_clamp_ehull(self, eh: torch.Tensor, ref: torch.Tensor,
                                elemental: torch.Tensor = None):
@@ -464,11 +587,13 @@ class OMatGRPOReward:
 
         1. Cell and masked-species guards: pathological cells and structures that still carry a
            mask token are not scored (their energy stays +inf, E_hull NaN).
-        2. Optional FIRE relaxation (relax_before_reward), with the cell when relax_cell_dof;
-           with the cell included, a post-relaxation cell guard follows.
-        3. UMA energy per atom and formation energy (both logged only), and the energy above
-           the LeMat-Bulk UMA hull, routed and clamped by _route_and_clamp_ehull.
-        Returns the per-structure stability term, -w_ehull * routed E_hull.
+        2. Optional FIRE relaxation (relax_before_reward, e_hull only), with the cell when
+           relax_cell_dof; with the cell included, a post-relaxation cell guard follows.
+        3. UMA energy per atom (logged, and the 'absolute' reward), formation energy
+           (logged, and the 'formation' reward), and for 'e_hull' the energy above the
+           LeMat-Bulk UMA hull, routed and clamped by _route_and_clamp_ehull.
+        Returns the per-structure energy term (for 'e_hull': -w_ehull * routed E_hull, minus the
+        residual geometry term when w_rmsd_geom > 0).
         """
         unrelaxed_atoms = [AseAtomsAdaptor.get_atoms(s) for s in group]
 
@@ -529,7 +654,8 @@ class OMatGRPOReward:
               f'masked={len(masked_idx)}/{N} '
               f'ok={len(ok_idx)}/{N}')
 
-        # Energy evaluation of the cells that passed the guard. With relax_before_reward, the structures are FIRE-relaxed first (at most relax_max_steps
+        # Energy evaluation of the cells that passed the guard. With reward_type='e_hull' and
+        # relax_before_reward, the structures are FIRE-relaxed first (at most relax_max_steps
         # steps, with the cell if relax_cell_dof), so energy and E_hull describe the relaxed
         # structure. Cells that failed the guard are not in ok_idx and keep energy +inf.
         self.last_relax_rmsd = [float('nan')] * N
@@ -538,7 +664,7 @@ class OMatGRPOReward:
         # failed a guard or the relaxation stay None; creativity then uses the generated
         # structure for them (counted as relax_fallback).
         self.last_relaxed_structures = [None] * N
-        do_relax = bool(getattr(self, 'relax_before_reward', False))
+        do_relax = bool(getattr(self, 'relax_before_reward', False)) and self.reward_type == 'e_hull'
         if ok_idx:
             ok_atoms = [unrelaxed_atoms[i] for i in ok_idx]
             if do_relax:
@@ -642,7 +768,9 @@ class OMatGRPOReward:
             static_result_ok = []
         # ts.static returns list[dict] with 'potential_energy' (grad_fn tensor)
 
-        # Assemble full-batch energies; degenerate slots get +inf (E_hull is then not looked up).
+        # Assemble full-batch energies; degenerate slots get +inf so existing
+        # nan_to_num(posinf=...) + clamp logic below routes them to the worst
+        # reward in both formation (+10 → reward −10) and absolute (+20 → −20) paths.
         energies_list = [float('inf')] * N
         for slot, r in zip(ok_idx, static_result_ok):
             if r is None:      # post-relax-guard-failed slot stays +inf → worst
@@ -662,7 +790,7 @@ class OMatGRPOReward:
         self.last_energy_per_atom = energy_per_atom.tolist()
         self.last_energy_per_atom_clamped = energy_per_atom_clamped.tolist()
 
-        # Formation energy (logged only).
+        # Compute formation energy (always, for logging and optionally for reward).
         # Bulk-crystal PBE refs via lemat_hull port (LeMat-GenBench convention) —
         # NOT iso-atom-in-vacuum refs. See __init__ for the rationale.
         if self._form_refs_available:
@@ -688,71 +816,112 @@ class OMatGRPOReward:
         else:
             self.last_formation_energy_per_atom = [float('nan')] * len(group)
 
-        # E_hull. Failures (cells that failed a guard, masked structures, a failed hull lookup)
-        # get E_hull NaN and reference count 0; _route_and_clamp_ehull decides what that means
-        # for the reward.
-        self.last_e_hull_per_atom, self.last_e_hull_ref_count = self._lookup_e_hull(
-            unrelaxed_atoms, ok_idx, energies.tolist())
+        # E_hull (only for reward_type='e_hull'; the hull lookup is not free). Failures (cells
+        # that failed a guard, masked structures, a failed hull lookup) get E_hull NaN and
+        # reference count 0; _route_and_clamp_ehull decides what that means for the reward.
+        if self.reward_type == 'e_hull':
+            self.last_e_hull_per_atom, self.last_e_hull_ref_count = self._lookup_e_hull(
+                unrelaxed_atoms, ok_idx, energies.tolist())
+        else:
+            self.last_e_hull_per_atom = [float('nan')] * len(unrelaxed_atoms)
 
-        # Stability term: -clamp(routed E_hull, floor, cap). The cap bounds the bad tail and
-        # is the value given to penalized and failed structures (nan_to_num maps NaN/inf to
-        # the cap before clamping). Without the floor at zero, below-hull structures earn
-        # more than on-hull ones; with it (ehull_floor_at_zero) they tie at the best value.
-        # A below-hull value is trusted only when it is shallower than ehull_mag_floor
-        # (deeper than UMA's error) and the hull has at least ehull_min_refset reference
-        # entries; otherwise it is penalized, not clamped to the best value, which would
-        # still pay the exploit. With the sparse-hull gate on, a sparse hull is untrusted for
-        # both E_hull signs. See _route_and_clamp_ehull and the paper's reward-hacking appendix.
-        eh = torch.tensor(self.last_e_hull_per_atom)
-        ref = torch.tensor(self.last_e_hull_ref_count, dtype=eh.dtype)
-        # Single-element mask: always computed (logged as elemental_frac); used for routing
-        # only when route_elemental='worst'.
-        elemental_mask = torch.tensor(
-            [len(set(a.get_chemical_symbols())) == 1 for a in unrelaxed_atoms])
-        _Ne = elemental_mask.numel()
-        self.last_elemental_fraction = (
-            elemental_mask.sum().item() / _Ne) if _Ne else 0.0
-        if getattr(self, 'route_elemental', 'off') == 'worst':
-            eh_clamped, untrusted = self._route_and_clamp_ehull(
-                eh, ref, elemental=elemental_mask)
-            self.last_elemental_routed_fraction = self.last_elemental_fraction
+        # Reward signal
+        if self.reward_type == 'formation' and self._form_refs_available:
+            form_epa = torch.tensor(self.last_formation_energy_per_atom)
+            form_epa = torch.nan_to_num(form_epa, nan=10.0, posinf=10.0, neginf=-10.0)
+            form_epa_clamped = torch.clamp(form_epa, min=-10.0, max=10.0)
+            energy_rewards = -form_epa_clamped            # formation-energy reward (reward-hacking appendix); unweighted
+            print(f'Formation E/atom (reward): {[round(e, 4) for e in form_epa_clamped.tolist()]}')
+            _n = form_epa_clamped.numel()
+            _hits = ((form_epa_clamped <= -10.0 + 1e-6) | (form_epa_clamped >= 10.0 - 1e-6)).sum().item()
+            self.last_formation_clamp_hit_fraction = (_hits / _n) if _n else 0.0
+            print(f'clamp_hit_fraction: {_hits}/{_n} = {self.last_formation_clamp_hit_fraction:.3f}')
+            self.last_e_hull_clamp_hit_fraction = None
+        elif self.reward_type == 'e_hull':
+            # Stability term: -clamp(routed E_hull, floor, cap). The cap bounds the bad tail and
+            # is the value given to penalized and failed structures (nan_to_num maps NaN/inf to
+            # the cap before clamping). Without the floor at zero, below-hull structures earn
+            # more than on-hull ones; with it (ehull_floor_at_zero) they tie at the best value.
+            # A below-hull value is trusted only when it is shallower than ehull_mag_floor
+            # (deeper than UMA's error) and the hull has at least ehull_min_refset reference
+            # entries; otherwise it is penalized, not clamped to the best value, which would
+            # still pay the exploit. With the sparse-hull gate on, a sparse hull is untrusted for
+            # both E_hull signs. See _route_and_clamp_ehull and the paper's reward-hacking appendix.
+            eh = torch.tensor(self.last_e_hull_per_atom)
+            ref = torch.tensor(self.last_e_hull_ref_count, dtype=eh.dtype)
+            # Single-element mask: always computed (logged as elemental_frac); used for routing
+            # only when route_elemental='worst'.
+            elemental_mask = torch.tensor(
+                [len(set(a.get_chemical_symbols())) == 1 for a in unrelaxed_atoms])
+            _Ne = elemental_mask.numel()
+            self.last_elemental_fraction = (
+                elemental_mask.sum().item() / _Ne) if _Ne else 0.0
+            if getattr(self, 'route_elemental', 'off') == 'worst':
+                eh_clamped, untrusted = self._route_and_clamp_ehull(
+                    eh, ref, elemental=elemental_mask)
+                self.last_elemental_routed_fraction = self.last_elemental_fraction
+            else:
+                eh_clamped, untrusted = self._route_and_clamp_ehull(eh, ref)
+                self.last_elemental_routed_fraction = 0.0
+            _N = eh.numel()
+            self.last_ehull_untrusted_fraction = (untrusted.sum().item() / _N) if _N else 0.0
+            if self.last_sparse_neutral_mask is not None:
+                self.last_sparse_neutral_fraction = (
+                    self.last_sparse_neutral_mask.sum().item() / _N) if _N else 0.0
+            else:
+                self.last_sparse_neutral_fraction = 0.0
+            # Share of structures on a sparse hull, logged with the gate on or off. Failed
+            # structures (reference count 0) count as sparse here too.
+            self.last_sparse_untrusted_fraction = (
+                (ref < self.ehull_min_refset).sum().item() / _N) if _N else 0.0
+            print(f'ehull_untrusted (penalized): '
+                  f'{int(untrusted.sum().item())}/{_N} = {self.last_ehull_untrusted_fraction:.3f} '
+                  f'| sparse_frac(ref<{self.ehull_min_refset})={self.last_sparse_untrusted_fraction:.3f} '
+                  f'| sparse_neutral_frac={self.last_sparse_neutral_fraction:.3f} '
+                  f'| elemental_frac={self.last_elemental_fraction:.3f} '
+                  f'(routed={self.last_elemental_routed_fraction:.3f}) '
+                  f'gate={self.ehull_sparse_gate} sparse_route={self.sparse_route} '
+                  f'route_elemental={getattr(self, "route_elemental", "off")}')
+            # w_ehull scales the stability term; w_ehull=0 turns it (and every guard penalty) off.
+            energy_rewards = -eh_clamped * self.w_ehull   # E_hull term weight = w_ehull only
+            self.last_ehull_clamped_term = eh_clamped.tolist()
+            print(f'E_hull/atom (reward): {[round(e, 4) for e in eh_clamped.tolist()]}')
+            _n = eh_clamped.numel()
+            # clamp hits = saturation at the cap (penalized/failed structures and the bad tail); below-hull
+            # (E_hull<0) is genuine signal, NOT a clamp hit.
+            _hits = (eh_clamped >= self.ehull_cap - 1e-6).sum().item()
+            self.last_e_hull_clamp_hit_fraction = (_hits / _n) if _n else 0.0
+            print(f'e_hull_clamp_hit_fraction: {_hits}/{_n} = {self.last_e_hull_clamp_hit_fraction:.3f}')
+            self.last_formation_clamp_hit_fraction = None
+
+            # Residual geometry term (reward-hacking appendix): -w_rmsd_geom * clamp(RMSD(gen, relaxed), 0, clamp).
+            # Reuses last_relax_rmsd from the same relaxation. NaN (failed or blown-up relaxation)
+            # maps to the clamp value, the worst penalty.
+            if self.w_rmsd_geom > 0.0:
+                rmsd_t = torch.tensor(self.last_relax_rmsd, dtype=eh_clamped.dtype)
+                rmsd_t = torch.nan_to_num(rmsd_t, nan=self.rmsd_geom_clamp,
+                                          posinf=self.rmsd_geom_clamp, neginf=self.rmsd_geom_clamp)
+                rmsd_clamped = torch.clamp(rmsd_t, min=0.0, max=self.rmsd_geom_clamp)
+                energy_rewards = energy_rewards - self.w_rmsd_geom * rmsd_clamped
+                self.last_rmsd_geom_clamped = rmsd_clamped.tolist()
+                _rn = rmsd_clamped.numel()
+                _rhits = (rmsd_clamped >= self.rmsd_geom_clamp - 1e-6).sum().item()
+                self.last_rmsd_geom_clamp_hit_fraction = (_rhits / _rn) if _rn else 0.0
+                print(f'RMSD_geom (reward term, Å): {[round(r, 4) for r in rmsd_clamped.tolist()]}')
+                print(f'rmsd_geom_clamp_hit_fraction: {_rhits}/{_rn} = {self.last_rmsd_geom_clamp_hit_fraction:.3f}')
+            else:
+                self.last_rmsd_geom_clamped = [float("nan")] * eh_clamped.numel()
+                self.last_rmsd_geom_clamp_hit_fraction = None
         else:
-            eh_clamped, untrusted = self._route_and_clamp_ehull(eh, ref)
-            self.last_elemental_routed_fraction = 0.0
-        _N = eh.numel()
-        self.last_ehull_untrusted_fraction = (untrusted.sum().item() / _N) if _N else 0.0
-        if self.last_sparse_neutral_mask is not None:
-            self.last_sparse_neutral_fraction = (
-                self.last_sparse_neutral_mask.sum().item() / _N) if _N else 0.0
-        else:
-            self.last_sparse_neutral_fraction = 0.0
-        # Share of structures on a sparse hull, logged with the gate on or off. Failed
-        # structures (reference count 0) count as sparse here too.
-        self.last_sparse_untrusted_fraction = (
-            (ref < self.ehull_min_refset).sum().item() / _N) if _N else 0.0
-        print(f'ehull_untrusted (penalized): '
-              f'{int(untrusted.sum().item())}/{_N} = {self.last_ehull_untrusted_fraction:.3f} '
-              f'| sparse_frac(ref<{self.ehull_min_refset})={self.last_sparse_untrusted_fraction:.3f} '
-              f'| sparse_neutral_frac={self.last_sparse_neutral_fraction:.3f} '
-              f'| elemental_frac={self.last_elemental_fraction:.3f} '
-              f'(routed={self.last_elemental_routed_fraction:.3f}) '
-              f'gate={self.ehull_sparse_gate} sparse_route={self.sparse_route} '
-              f'route_elemental={getattr(self, "route_elemental", "off")}')
-        # w_ehull scales the stability term; w_ehull=0 turns it (and every guard penalty) off.
-        energy_rewards = -eh_clamped * self.w_ehull   # E_hull term weight = w_ehull only
-        self.last_ehull_clamped_term = eh_clamped.tolist()
-        print(f'E_hull/atom (reward): {[round(e, 4) for e in eh_clamped.tolist()]}')
-        _n = eh_clamped.numel()
-        # clamp hits = saturation at the cap (penalized/failed structures and the bad tail); below-hull
-        # (E_hull<0) is genuine signal, NOT a clamp hit.
-        _hits = (eh_clamped >= self.ehull_cap - 1e-6).sum().item()
-        self.last_e_hull_clamp_hit_fraction = (_hits / _n) if _n else 0.0
-        print(f'e_hull_clamp_hit_fraction: {_hits}/{_n} = {self.last_e_hull_clamp_hit_fraction:.3f}')
+            energy_rewards = -energy_per_atom_clamped     # absolute-energy reward (reward-hacking appendix); unweighted
+            self.last_formation_clamp_hit_fraction = None
+            self.last_e_hull_clamp_hit_fraction = None
 
         print(f'Energy/atom (post-relax in relax path): {[round(e, 4) for e in self.last_energy_per_atom]}')
         if self._form_refs_available:
             print(f'Formation E/atom (log): {[round(e, 4) if np.isfinite(e) else float("nan") for e in self.last_formation_energy_per_atom]}')
-        print(f'E_hull/atom (log): {[round(e, 4) if np.isfinite(e) else float("nan") for e in self.last_e_hull_per_atom]}')
+        if self.reward_type == 'e_hull':
+            print(f'E_hull/atom (log): {[round(e, 4) if np.isfinite(e) else float("nan") for e in self.last_e_hull_per_atom]}')
 
         del unrelaxed_atoms, static_result_ok
         gc.collect()
@@ -837,8 +1006,9 @@ class OMatGRPOReward:
 
     def calculate_rewards(self):
         """
-        Computes the per-structure reward: stability term (calculate_batch_energy_reward)
-        + w_creat * creativity.
+        Computes the per-structure reward: displacement term (reward-hacking appendix, only if
+        weights['rmsd'] > 0) + energy term (calculate_batch_energy_reward, only if
+        weights['energy'] > 0) + w_creat * creativity.
 
         Returns
         -------
@@ -848,10 +1018,25 @@ class OMatGRPOReward:
             - gathered_rewards (torch.Tensor): Per-structure combined rewards.
         """
         self.device = self.gen.cell.device
+        w_rmsd = float(self.weights.get('rmsd', 0.0))
+        w_energy = float(self.weights.get('energy', 0.0))
+
         n = len(self.group)
 
-        # --- Stability term ---
-        energy_rewards = self.calculate_batch_energy_reward(self.group)
+        # --- RMSD reward (only if weighted) ---
+        if w_rmsd > 0.0:
+            rmsd_rewards = self.calculate_batch_rmsd_reward(self.group, 'rmsd')
+        else:
+            rmsd_rewards = torch.zeros(n)
+
+        # --- Energy reward (weights['energy'] only switches this path on; it is not a factor) ---
+        if w_energy > 0.0:
+            energy_rewards = self.calculate_batch_energy_reward(self.group)
+        else:
+            energy_rewards = torch.zeros(n)
+            self.last_energy_per_atom = [float('nan')] * n
+            self.last_energy_per_atom_clamped = [float('nan')] * n
+            self.last_formation_energy_per_atom = [float('nan')] * n
 
         # --- Creativity term (only if w_creat > 0) ---
         # creat_on_relaxed=False scores the generated structures (Chemeleon2 convention);
@@ -875,14 +1060,15 @@ class OMatGRPOReward:
             self.last_creativity = []
 
         # --- Combine ---
-        combined = energy_rewards + self.w_creat * creat_scores
+        combined = rmsd_rewards + energy_rewards + self.w_creat * creat_scores
 
         self.score_details = {idx + 1: {} for idx in range(n)}
         for idx in range(n):
+            self.score_details[idx + 1]['rmsd_reward'] = rmsd_rewards[idx]
             self.score_details[idx + 1]['energy_reward'] = energy_rewards[idx]
             self.score_details[idx + 1]['creativity_reward'] = self.w_creat * creat_scores[idx]
-            self.score_details[idx + 1]['energy_per_atom'] = self.last_energy_per_atom[idx]
-            self.score_details[idx + 1]['formation_energy_per_atom'] = self.last_formation_energy_per_atom[idx]
+            self.score_details[idx + 1]['energy_per_atom'] = self.last_energy_per_atom[idx] if w_energy > 0.0 else float('nan')
+            self.score_details[idx + 1]['formation_energy_per_atom'] = self.last_formation_energy_per_atom[idx] if w_energy > 0.0 else float('nan')
             self.score_details[idx + 1]['reward'] = combined[idx]
 
         gathered_rewards = torch.tensor(
@@ -893,6 +1079,7 @@ class OMatGRPOReward:
 
         print(
             f"reward breakdown: "
+            f"rmsd_reward={[float(r) for r in rmsd_rewards]} | "
             f"energy_reward={[float(r) for r in energy_rewards]}"
         )
 
@@ -943,6 +1130,8 @@ class OMatGRPOReward:
         return atoms, structures
     
     def __call__(self, gen, aux=None, step=0):
+        # Set gen for this call
+        self._current_step = step
         self.gen = gen
 
         self.atoms, self.structures = self.process_data(self.gen)
@@ -953,7 +1142,7 @@ class OMatGRPOReward:
 
         # Build W&B metrics dict — aggregate stats across the full batch
         metrics = {}
-        if self.last_energy_per_atom:
+        if self.weights.get('energy', 0.0) > 0.0 and self.last_energy_per_atom:
             epa = torch.tensor(self.last_energy_per_atom)
             finite = torch.isfinite(epa)
             if finite.any():
@@ -980,8 +1169,8 @@ class OMatGRPOReward:
                     metrics["energy/formation_per_atom_max"] = fpa_f.max().item()
                     metrics["energy/formation_per_atom_median"] = fpa_f.median().item()
 
-            # E_hull metrics
-            if getattr(self, 'last_e_hull_per_atom', None):
+            # E_hull metrics (only for reward_type='e_hull')
+            if self.reward_type == 'e_hull' and getattr(self, 'last_e_hull_per_atom', None):
                 eh = torch.tensor(self.last_e_hull_per_atom)
                 eh_finite = eh[torch.isfinite(eh)]
                 if eh_finite.numel() > 0:
@@ -996,18 +1185,22 @@ class OMatGRPOReward:
                         (~torch.isfinite(eh)).sum().item()
                     )
 
+        if getattr(self, 'last_formation_clamp_hit_fraction', None) is not None:
+            # clamp hits of the formation-energy reward (E_hull has its own key below)
+            metrics["reward/formation_clamp_hit_fraction"] = float(self.last_formation_clamp_hit_fraction)
         if getattr(self, 'last_e_hull_clamp_hit_fraction', None) is not None:
             metrics["reward/e_hull_clamp_hit_fraction"] = float(self.last_e_hull_clamp_hit_fraction)
-        metrics["reward/ehull_untrusted_frac"] = float(getattr(self, 'last_ehull_untrusted_fraction', 0.0))
-        metrics["reward/hull_lookup_fail_count"] = float(getattr(self, 'last_hull_lookup_failures', 0))
-        # sparse-hull share, logged with the gate on or off
-        metrics["reward/sparse_untrusted_frac"] = float(getattr(self, 'last_sparse_untrusted_fraction', 0.0))
-        # abstaining share (sparse_route='neutral')
-        metrics["reward/sparse_neutral_frac"] = float(getattr(self, 'last_sparse_neutral_fraction', 0.0))
-        # single-element share (always) and the share penalized by the single-element guard
-        # (nonzero only when route_elemental='worst')
-        metrics["reward/elemental_frac"] = float(getattr(self, 'last_elemental_fraction', 0.0))
-        metrics["reward/elemental_routed_frac"] = float(getattr(self, 'last_elemental_routed_fraction', 0.0))
+        if self.reward_type == 'e_hull':
+            metrics["reward/ehull_untrusted_frac"] = float(getattr(self, 'last_ehull_untrusted_fraction', 0.0))
+            metrics["reward/hull_lookup_fail_count"] = float(getattr(self, 'last_hull_lookup_failures', 0))
+            # sparse-hull share, logged with the gate on or off
+            metrics["reward/sparse_untrusted_frac"] = float(getattr(self, 'last_sparse_untrusted_fraction', 0.0))
+            # abstaining share (sparse_route='neutral')
+            metrics["reward/sparse_neutral_frac"] = float(getattr(self, 'last_sparse_neutral_fraction', 0.0))
+            # single-element share (always) and the share penalized by the single-element guard
+            # (nonzero only when route_elemental='worst')
+            metrics["reward/elemental_frac"] = float(getattr(self, 'last_elemental_fraction', 0.0))
+            metrics["reward/elemental_routed_frac"] = float(getattr(self, 'last_elemental_routed_fraction', 0.0))
 
         # Creativity metrics (only when w_creat > 0). The within-group std, the part GRPO can
         # learn from, is logged in grpo_lightning as creativity/wg_std (the reward does not know B/K).

@@ -1,4 +1,8 @@
-# OMatGRPO
+# OMatGRPO (branch reward-hacking)
+
+This branch is the code of `main` plus the reward variants that the paper's reward-hacking appendix studies. They
+are described in [Reward variants from the reward-hacking study](#reward-variants-from-the-reward-hacking-study).
+For the paper's main runs, use `main`.
 
 OMatGRPO fine-tunes an [OMatG](https://github.com/FERMat-ML/OMatG) crystal generator with group relative policy
 optimization (GRPO). The policy acts on all three channels of the generator. Positions and the lattice are
@@ -199,11 +203,10 @@ structures abstain, except single-element ones, which the single-element guard p
 The creativity term needs `average-minimum-distance` (CC BY-NC-SA 4.0). Its non-commercial terms apply to every
 run with `--w_creat > 0`, although OMatGRPO's own code is MIT licensed.
 
-**The `reward-hacking` branch.** The paper's reward-hacking appendix also studies reward variants that no recipe
-here uses. The branch `reward-hacking` is this code plus those variants, with their flags, tests and a README
-section: the displacement reward (mode 1, `--w_rmsd`, `--fmax`, `--fmax_schedule`, `--reward_offset`), the
-formation-energy reward (mode 2, `--reward_type formation`), the absolute-energy reward (`--reward_type absolute`)
-and the residual geometry term (mode 4, `--w_rmsd_geom`, `--rmsd_geom_clamp`). Use `main` for the paper's runs.
+**This branch.** The paper's reward-hacking appendix also studies reward variants that no recipe uses: the
+displacement reward (mode 1), the formation-energy reward (mode 2), the absolute-energy reward and the residual
+geometry term (mode 4). This branch has them, with their flags and tests. See
+[Reward variants from the reward-hacking study](#reward-variants-from-the-reward-hacking-study).
 
 ## Recipes
 
@@ -224,6 +227,71 @@ lattice: `--fields pos,cell --freeze_composition true --alpha_pos 1 --alpha_cell
 --relax_cell false --single_element_guard off --occurrence_discount false --w_mmd 0 --w_creat 0
 --creat_on_relaxed false`. All members of a group share a composition there, so the occurrence discount would
 set every reward to the floor. The code refuses that combination.
+
+## Reward variants from the reward-hacking study
+
+The paper's reward-hacking appendix catalogs ways in which earlier versions of the reward were exploited. Modes 3
+and 5 and penalty routing are switches of the main code (see the guard table). This branch adds the code of the
+other variants, so the failure modes can be studied. `tests/test_reward_variants.py` checks each variant's
+arithmetic on CPU with a stand-in for the potential, and each variant ran for two rollouts without error on a GPU.
+
+The original runs used an earlier command-line interface, whose defaults differ from the defaults here (no
+sparse-hull gate, penalty routing, no floor at zero, cap 5, no cell relaxation, no occurrence discount, no MMD bonus,
+no creativity term, α = 1 for positions and lattice). The commands below write those settings out in today's flags.
+The runs also used older versions of the code, so a rerun repeats the recipe but not the run bit for bit.
+
+All commands below share these flags:
+
+```bash
+COMMON="--fields pos,cell,species --species_eta 0 --num_groups 4 --group_size 16 --time_grid 64 --inner_epochs 3 \
+  --lr 1e-4 --alpha_pos 1 --alpha_cell 1 --alpha_species 0.1 --beta_kl_pos 0.01 --beta_kl_species 0 \
+  --relax_cell false --stability_floor_at_zero false --stability_cap 5 --deep_below_hull -0.1 --sparse_gate false \
+  --sparse_min_refs 12 --sparse_route penalty --single_element_guard off --occurrence_discount false --w_mmd 0 \
+  --w_creat 0 --creat_on_relaxed false"
+```
+
+**Displacement reward (mode 1).** Flags `--w_rmsd` (weight), `--fmax` (force tolerance of its relaxation, eV/Å),
+`--fmax_schedule` (tolerance by training step, for example `0:10,1000:5`) and `--reward_offset`. The term is
+log(1 + offset) - log(1 + RMSD) between the generated structure and its FIRE relaxation (at most 1,000 steps),
+weighted by `--w_rmsd`. It adds to the energy reward chosen by `--reward_type`. This code has no switch for a
+displacement-only reward. Mode 1 was found with an early version of the reward that used a different relaxation
+engine, so its numbers cannot be reproduced exactly with this code. The original runs are not recorded in this
+repository.
+
+```bash
+python -m omg.grpo.train $COMMON --run_name displacement --rollouts 750 --relax false --reward_type absolute --w_rmsd 1
+```
+
+**Formation-energy reward (mode 2).** Flag `--reward_type formation`. The reward is minus the formation energy
+per atom, clipped to [-10, 10] eV/atom, with the bulk-crystal element references of LeMat-GenBench. Original runs:
+`apr05_R6_poscellspecies_350r_formfix` (all three channels, 350 rollouts) and its siblings R3 to R5 on fewer
+channels.
+
+```bash
+python -m omg.grpo.train $COMMON --run_name R6_poscellspecies_350r_formfix --rollouts 350 --relax false \
+    --reward_type formation
+```
+
+**Absolute-energy reward.** Flag `--reward_type absolute`. The reward is minus the UMA energy per atom, clipped to
+[-20, 20] eV/atom. This was the default reward of the earlier interface. Its original runs are not recorded in
+this repository.
+
+```bash
+python -m omg.grpo.train $COMMON --run_name absolute --rollouts 750 --relax false --reward_type absolute
+```
+
+**Residual geometry term (mode 4).** Flags `--w_rmsd_geom` (weight) and `--rmsd_geom_clamp` (Å). The term
+subtracts the weight times the RMSD between the generated structure and its relaxed structure, clipped to
+[0, clamp], from the stability term. It reuses the relaxation before scoring, so it needs `--relax true`. Original
+runs: `ehull_rmsd_combined_3field_750` (stability and geometry terms) and `ehull_rmsdonly_3field_750` (geometry
+term only, `--w_stability 0`).
+
+```bash
+python -m omg.grpo.train $COMMON --run_name ehull_rmsd_combined_3field_750 --rollouts 750 --relax true \
+    --relax_steps 100 --w_stability 1 --w_rmsd_geom 1 --rmsd_geom_clamp 3
+python -m omg.grpo.train $COMMON --run_name ehull_rmsdonly_3field_750 --rollouts 750 --relax true \
+    --relax_steps 100 --w_stability 0 --w_rmsd_geom 1 --rmsd_geom_clamp 3
+```
 
 ## Flag reference
 
@@ -300,6 +368,18 @@ same. Defaults are the OMatGRPO recipe. An unknown flag is an error.
 | `--creat_on_relaxed` | `True` | score creativity on the relaxed structures (needs --relax true) |
 | `--creativity_reference` | `None` | creativity reference; None means <data_dir>/references/mp20_train_ref.json.gz |
 | `--creativity_sm_timeout` | `3.0` | StructureMatcher timeout per structure (s, rounded to an integer >= 1); a timeout scores 0 |
+
+**reward variants of the reward-hacking appendix**
+
+| flag | default | description |
+|---|---|---|
+| `--reward_type` | `e_hull` | e_hull (paper), or the formation / absolute energy rewards (e_hull, formation, absolute) |
+| `--w_rmsd_geom` | `0.0` | weight of the residual geometry term (0 = off) |
+| `--rmsd_geom_clamp` | `3.0` | clamp of the residual geometry term (A) |
+| `--w_rmsd` | `0.0` | weight of the displacement reward (0 = off) |
+| `--fmax` | `10.0` | force tolerance of the displacement-reward relaxation |
+| `--fmax_schedule` | `None` | step:fmax pairs for the displacement reward, e.g. 0:10,1000:5 |
+| `--reward_offset` | `0.3` | offset of the displacement reward |
 
 wandb logs offline by default (`<output_dir>/wandb`, upload later with `wandb sync`). Use `--wandb_mode online`
 to log live, or `--wandb_mode disabled` to turn it off.

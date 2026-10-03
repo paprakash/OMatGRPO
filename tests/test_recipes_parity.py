@@ -53,10 +53,12 @@ RENAME = {
     "--mmd_norm": ("mmd_norm", str),
     "--w_creat": ("w_creat", float),
     "--creat_on_relaxed": ("creat_on_relaxed", lambda v: True if v is None else _bool(v)),
+    "--reward_type": ("reward_type", str),
+    "--w_rmsd_geom": ("w_rmsd_geom", float),
+    "--w_rmsd": ("w_rmsd", float),
 }
-# original flags that no longer exist, with the value that makes them a no-op (the reward
-# variants of the reward-hacking appendix are on the reward-hacking branch)
-REMOVED_NOOP = {"--w_energy": "1.0", "--reward_type": "e_hull", "--w_rmsd_geom": "0.0", "--w_rmsd": "0.0"}
+# original flags that no longer exist, with the value that makes them a no-op
+REMOVED_NOOP = {"--w_energy": "1.0"}
 # flags that are only locations or names, not settings
 NOT_SETTINGS = {"--config", "--ckpt_path", "--mmd_comp_reference", "--run_name", "--wandb_run_name"}
 
@@ -79,12 +81,7 @@ def test_module_kwargs_match_original_run(ident):
     # Removed arguments held no-op values in the original run.
     assert old.pop("ent_coef") == 0.0                      # entropy bonus, removed
     assert old_rc.pop("reward_mode") == "energy"           # sanity rewards, removed
-    assert old_rc.pop("weights") == {"rmsd": 0.0, "energy": 1.0}   # --w_energy fixed at 1, no displacement reward
-    # Reward-hacking variants, removed: the stability reward, and inert settings of the
-    # residual geometry term and the displacement reward.
-    assert old_rc.pop("reward_type") == "e_hull"
-    assert old_rc.pop("w_rmsd_geom") == 0.0
-    old_rc.pop("rmsd_geom_clamp"), old_rc.pop("fmax"), old.pop("reward_offset")
+    assert old_rc["weights"]["energy"] == 1.0              # --w_energy is now fixed at 1
 
     # Locations: only whether they are set.
     assert (old.pop("mmd_comp_reference") is None) == (kw.pop("mmd_comp_reference") is None)

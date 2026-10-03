@@ -103,9 +103,11 @@ def test_creat_on_relaxed_fallback_substitution(known_structure,
                                                 quinary_structure, no_uma):
     # With creat_on_relaxed, slots with a retained relaxed
     # Structure are scored on it; None slots fall back to the gen structure
-    # and are counted. UMA replaced by no_uma; ctor guard needs the relax config.
+    # and are counted. UMA replaced by no_uma; ctor guard needs the e_hull
+    # relax config.
     r = OMatGRPOReward(
-        device="cpu", relax_before_reward=True,
+        device="cpu", reward_type="e_hull",
+        relax_before_reward=True, weights={"rmsd": 0.0, "energy": 1.0},
         w_creat=1.0, creativity_reference=CACHE, creat_on_relaxed=True)
     relaxed = known_structure.copy()
     r.group = [quinary_structure, known_structure]
@@ -122,7 +124,7 @@ def test_creat_on_relaxed_fallback_substitution(known_structure,
 
 
 def test_creat_on_relaxed_ctor_guard(no_uma):
-    # FATAL when the flag is on without the relax config — the term
+    # FATAL when the flag is on without the e_hull relax config — the term
     # must never silently score unrelaxed geometry.
     with pytest.raises(ValueError, match="creat_on_relaxed"):
         OMatGRPOReward(

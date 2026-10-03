@@ -63,7 +63,11 @@ def test_struct_00000_formation_energy():
     struct = Structure.from_file(CIF_PATH)
     assert len(struct) == 12, f"expected 12 atoms, got {len(struct)}"
 
-    reward = OMatGRPOReward(device="cuda")
+    reward = OMatGRPOReward(
+        weights={"rmsd": 0.0, "energy": 1.0},
+        reward_type="formation",
+        device="cuda",
+    )
     reward.calculate_batch_energy_reward([struct])
     fe = reward.last_formation_energy_per_atom[0]
 

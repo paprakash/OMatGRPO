@@ -149,6 +149,16 @@ def build_parser() -> argparse.ArgumentParser:
          "<data_dir>/references/mp20_train_ref.json.gz")
     flag(g, "creativity_sm_timeout", float, 3.0, "StructureMatcher timeout per structure (s, rounded to an "
          "integer >= 1); a timeout scores 0")
+
+    g = p.add_argument_group("reward variants of the reward-hacking appendix")
+    flag(g, "reward_type", str, "e_hull", "e_hull (paper), or the formation / absolute energy rewards",
+         choices=["e_hull", "formation", "absolute"])
+    flag(g, "w_rmsd_geom", float, 0.0, "weight of the residual geometry term (0 = off)")
+    flag(g, "rmsd_geom_clamp", float, 3.0, "clamp of the residual geometry term (A)")
+    flag(g, "w_rmsd", float, 0.0, "weight of the displacement reward (0 = off)")
+    flag(g, "fmax", float, 10.0, "force tolerance of the displacement-reward relaxation")
+    flag(g, "fmax_schedule", str, None, "step:fmax pairs for the displacement reward, e.g. 0:10,1000:5")
+    flag(g, "reward_offset", float, 0.3, "offset of the displacement reward")
     return p
 
 
@@ -242,6 +252,8 @@ def validate_config(cfg: Dict[str, Any]) -> None:
     if cfg["creat_on_relaxed"] and cfg["w_creat"] > 0 and not cfg["relax"]:
         errors.append("--creat_on_relaxed true needs --relax true; set --creat_on_relaxed false to score "
                       "creativity on unrelaxed structures")
+    if cfg["creat_on_relaxed"] and cfg["w_creat"] > 0 and cfg["reward_type"] != "e_hull":
+        errors.append("--creat_on_relaxed true needs --reward_type e_hull")
     if cfg["stability_cap"] <= 0:
         errors.append("--stability_cap must be > 0")
     if not cfg["occurrence_tol"] < cfg["occurrence_zero"]:
@@ -253,7 +265,7 @@ def validate_config(cfg: Dict[str, Any]) -> None:
             errors.append(f"--{name} must be >= 1")
     if cfg["time_grid"] < 2:
         errors.append("--time_grid must be >= 2")
-    for name in ("w_mmd", "w_creat", "w_stability", "beta_kl_pos", "beta_kl_species"):
+    for name in ("w_mmd", "w_creat", "w_stability", "beta_kl_pos", "beta_kl_species", "w_rmsd", "w_rmsd_geom"):
         if cfg[name] < 0:
             errors.append(f"--{name} must be >= 0")
     if "species" in fields and cfg["beta_kl_species"] > 0 and cfg["species_eta"] != 0.0:
@@ -268,9 +280,18 @@ def validate_config(cfg: Dict[str, Any]) -> None:
 
 def module_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Keyword arguments of OMatGRPOModule (without si, sampler and model) for a resolved config."""
+    fmax_schedule = None
+    if cfg["fmax_schedule"]:
+        fmax_schedule = [(int(s), float(v)) for s, v in
+                         (pair.split(":") for pair in cfg["fmax_schedule"].split(","))]
     reward_cfg = {
+        "fmax": cfg["fmax"],
+        "weights": {"rmsd": cfg["w_rmsd"], "energy": 1.0},
+        "reward_type": cfg["reward_type"],
         "relax_before_reward": cfg["relax"],
         "relax_max_steps": cfg["relax_steps"],
+        "w_rmsd_geom": cfg["w_rmsd_geom"],
+        "rmsd_geom_clamp": cfg["rmsd_geom_clamp"],
         "w_ehull": cfg["w_stability"],
         "ehull_mag_floor": cfg["deep_below_hull"],
         "ehull_min_refset": cfg["sparse_min_refs"],
@@ -285,6 +306,8 @@ def module_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "creativity_sm_timeout": cfg["creativity_sm_timeout"],
         "creat_on_relaxed": cfg["creat_on_relaxed"],
     }
+    if fmax_schedule is not None:
+        reward_cfg["fmax_schedule"] = fmax_schedule
     use_mmd = cfg["w_mmd"] > 0
     return {
         "k": cfg["group_size"],
@@ -294,6 +317,7 @@ def module_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "lr": cfg["lr"],
         "fields": tuple(cfg["fields"].split(",")),
         "num_inner_epochs": cfg["inner_epochs"],
+        "reward_offset": cfg["reward_offset"],
         "reward_cfg": reward_cfg,
         "dng_mode": cfg["freeze_composition"],
         "alpha_pos": cfg["alpha_pos"],

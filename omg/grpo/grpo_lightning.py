@@ -36,6 +36,7 @@ class OMatGRPOModule(L.LightningModule):
         sampler: Sampler,
         model: Model,
         k: int = 4,
+        reward_offset: float = 0.3,
         eps_clip: float = 0.2,
         beta_kl: float = 0.05,
         beta_kl_species: float = 0.0,
@@ -64,6 +65,7 @@ class OMatGRPOModule(L.LightningModule):
         self.si = si
         self.sampler = sampler
         self.model = model
+        self.reward_offset = reward_offset
         self.dng_mode = bool(dng_mode)
 
         # The closed-form species KL assumes species noise eta = 0. Check it here, before data
@@ -165,7 +167,9 @@ class OMatGRPOModule(L.LightningModule):
                   f"norm={self.mmd_norm} w_mmd_diversity={self.w_mmd_diversity} src={mmd_comp_reference}")
 
         # The reward (and its UMA potential) is built once and reused every step.
-        self.reward_fn = OMatGRPOReward(**(reward_cfg or {}))
+        reward_kwargs = {'weights': {'rmsd': 0.0, 'energy': 1.0}, 'reward_offset': reward_offset}
+        reward_kwargs.update(reward_cfg or {})
+        self.reward_fn = OMatGRPOReward(**reward_kwargs)  # used for mattersim rmsd
 
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
@@ -504,13 +508,16 @@ class OMatGRPOModule(L.LightningModule):
         This equals base*factor when floor=0 (MatInvent's case). For signed rewards it keeps
         final in [floor, base], with final == base only when factor == 1, so a repeated
         composition is always pulled toward the worst reward whatever the sign of base.
-        floor = -(ehull_cap*w_ehull), lowered to the batch minimum if any reward sits below it.
+        floor = -(ehull_cap*w_ehull + rmsd_geom_clamp*w_rmsd_geom), lowered to the batch minimum
+        if any reward sits below it.
         """
         K = self.k
         rf = self.reward_fn
         w_ehull = float(getattr(rf, 'w_ehull', 1.0))
+        w_rmsd = float(getattr(rf, 'w_rmsd_geom', 0.0))
+        rmsd_clamp = float(getattr(rf, 'rmsd_geom_clamp', 3.0))
         EH_CLAMP_MAX = float(getattr(rf, 'ehull_cap', 5.0))  # upper clamp of the E_hull term in reward.py
-        floor = -(EH_CLAMP_MAX * w_ehull)
+        floor = -(EH_CLAMP_MAX * w_ehull + rmsd_clamp * w_rmsd)  # weights['energy'] is a gate, not a scale
         floor = min(floor, float(rewards.min().item())) - 1e-6  # guard: base >= floor always
 
         tol, buff = float(self.div_tol), float(self.div_buff)
@@ -980,6 +987,9 @@ class OMatGRPOModule(L.LightningModule):
             return None
         reward_time = time.time() - reward_start_time
 
+        if hasattr(self.reward_fn, '_get_current_fmax'):
+            self.log("reward/current_fmax", self.reward_fn._get_current_fmax(), prog_bar=False)
+            
         # Within-group spread of the energy: GRPO learns only from differences within a group.
         if hasattr(self.reward_fn, 'last_energy_per_atom') and self.reward_fn.last_energy_per_atom:
             epa = torch.tensor(self.reward_fn.last_energy_per_atom, device=self.device)
@@ -993,6 +1003,22 @@ class OMatGRPOModule(L.LightningModule):
                         on_step=True, prog_bar=False, batch_size=B)
                 self.log("energy/within_group_range_mean", within_range.mean(),
                         on_step=True, prog_bar=False, batch_size=B)
+
+        # With the residual geometry term (w_rmsd_geom > 0, reward-hacking appendix): within-group std and
+        # mean of the E_hull and geometry terms, to see how their balance moves during training.
+        if float(getattr(self.reward_fn, 'w_rmsd_geom', 0.0)) > 0.0:
+            for tag, attr in (("ehull_term", "last_ehull_clamped_term"),
+                              ("rmsd_term", "last_rmsd_geom_clamped")):
+                vals = getattr(self.reward_fn, attr, None)
+                if vals and len(vals) == B * self.k:
+                    t = torch.tensor(vals, device=self.device, dtype=torch.float)
+                    if torch.isfinite(t).all():
+                        t2d = t.view(B, self.k)
+                        self.log(f"combined/{tag}_within_group_std_mean",
+                                 t2d.std(dim=1, unbiased=True).mean(),
+                                 on_step=True, prog_bar=False, batch_size=B)
+                        self.log(f"combined/{tag}_mean", t.mean(),
+                                 on_step=True, prog_bar=False, batch_size=B)
 
         # MMD bonus magnitudes (scaled bonus w_mmd * r_indiv). The within-group std is the part
         # that survives advantage normalization; a constant within a group is subtracted out.
