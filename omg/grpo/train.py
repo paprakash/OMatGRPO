@@ -1,9 +1,9 @@
 """OMatGRPO training entry point.
 
-    python -m omg.grpo.train --recipe configs/recipes/arityguard_creatrelax.yaml [--flag value ...]
+    python -m omg.grpo.train --config configs/runs/arityguard_creatrelax.yaml [--flag value ...]
 
-Settings resolve in this order: built-in defaults (the OMatGRPO recipe), then the recipe file, then
-flags given on the command line. Unknown flags and unknown recipe keys are errors.
+Settings resolve in this order: built-in defaults (the OMatGRPO run), then the config file, then
+flags given on the command line. Unknown flags and unknown config keys are errors.
 --print_config prints the resolved settings and exits.
 """
 import argparse
@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         group.add_argument(f"--{name}", **kw)
 
     g = p.add_argument_group("run")
-    g.add_argument("--recipe", default=None,
+    g.add_argument("--config", default=None,
                    help="YAML file with flag values (keys = flag names without --); command-line flags override it")
     g.add_argument("--print_config", action="store_true", help="print the resolved settings and exit")
     flag(g, "run_name", str, "omatgrpo", "name of the run (output folder and wandb run name)")
@@ -185,10 +185,10 @@ def _parser_dests(parser) -> List[str]:
 
 
 def resolve_config(argv: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """Resolve the settings from defaults, an optional --recipe file and command-line flags.
+    """Resolve the settings from defaults, an optional --config file and command-line flags.
 
-    Pure apart from reading the recipe file: `env` (default os.environ) is only used for the data
-    directory. Raises SystemExit on unknown flags and ValueError on unknown recipe keys or invalid
+    Pure apart from reading the config file: `env` (default os.environ) is only used for the data
+    directory. Raises SystemExit on unknown flags and ValueError on unknown config keys or invalid
     combinations.
     """
     import os
@@ -197,24 +197,24 @@ def resolve_config(argv: Optional[List[str]] = None, env: Optional[Dict[str, str
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--recipe", default=None)
+    pre.add_argument("--config", default=None)
     known, _ = pre.parse_known_args(argv)
-    recipe_values: Dict[str, Any] = {}
-    if known.recipe:
-        with open(known.recipe) as f:
-            recipe_values = yaml.safe_load(f) or {}
-        dests = set(_parser_dests(parser)) - {"recipe", "print_config"}
-        unknown = sorted(set(recipe_values) - dests)
+    file_values: Dict[str, Any] = {}
+    if known.config:
+        with open(known.config) as f:
+            file_values = yaml.safe_load(f) or {}
+        dests = set(_parser_dests(parser)) - {"config", "print_config"}
+        unknown = sorted(set(file_values) - dests)
         if unknown:
-            raise ValueError(f"{known.recipe}: unknown keys {unknown}")
+            raise ValueError(f"{known.config}: unknown keys {unknown}")
         for action in parser._actions:
-            if action.dest in recipe_values and action.choices is not None:
-                if recipe_values[action.dest] not in action.choices:
-                    raise ValueError(f"{known.recipe}: {action.dest}={recipe_values[action.dest]!r} not in "
+            if action.dest in file_values and action.choices is not None:
+                if file_values[action.dest] not in action.choices:
+                    raise ValueError(f"{known.config}: {action.dest}={file_values[action.dest]!r} not in "
                                      f"{list(action.choices)}")
-            if action.dest in recipe_values and action.type is _bool:
-                recipe_values[action.dest] = _bool(recipe_values[action.dest])
-        parser.set_defaults(**recipe_values)
+            if action.dest in file_values and action.type is _bool:
+                file_values[action.dest] = _bool(file_values[action.dest])
+        parser.set_defaults(**file_values)
     cfg = vars(parser.parse_args(argv))
 
     data_dir = Path(cfg["data_dir"] or env.get("OMATGRPO_DATA_DIR") or (REPO_ROOT / "omg" / "data"))

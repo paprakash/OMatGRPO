@@ -39,10 +39,10 @@ def test_downloaded_file_with_wrong_hash_is_not_installed(tmp_path):
     assert not dest.exists()
 
 
-def test_identifiers_match_recipes():
-    recipes = {p.stem for p in (REPO / "configs" / "recipes").glob("*.yaml")}
-    assert set(download_assets.MODEL_FILES) == recipes
-    assert set(download_assets.STRUCTURE_FILES) == recipes | {"R0", "bestofn48k_top2500"}
+def test_identifiers_match_runs():
+    runs = {p.stem for p in (REPO / "configs" / "runs").glob("*.yaml")}
+    assert set(download_assets.MODEL_FILES) == runs
+    assert set(download_assets.STRUCTURE_FILES) == runs | {"R0", "bestofn48k_top2500"}
 
 
 def _fake_hub(monkeypatch, repo_dir):

@@ -1,5 +1,5 @@
 # frozen_control: Frozen-composition control: one composition per group sampled from the frozen prior; the policy learns positions and lattice only. Positions-only relaxation, no occurrence, MMD or creativity term.
-# python -m omg.grpo.train --recipe configs/recipes/frozen_control.yaml
+# python -m omg.grpo.train --config configs/runs/frozen_control.yaml
 run_name: frozen_control
 fields: pos,cell
 freeze_composition: true

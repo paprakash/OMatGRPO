@@ -1,6 +1,6 @@
-# canonical: Discovery, pre-creativity: no single-element guard, no creativity term.
-# python -m omg.grpo.train --recipe configs/recipes/canonical.yaml
-run_name: canonical
+# sparseworst: Penalty routing, pre-creativity: sparse-hull penalty, no single-element guard, no creativity term.
+# python -m omg.grpo.train --config configs/runs/sparseworst.yaml
+run_name: sparseworst
 fields: pos,cell,species
 freeze_composition: false
 num_groups: 4
@@ -25,7 +25,7 @@ stability_cap: 1.0
 deep_below_hull: -0.1
 sparse_gate: true
 sparse_min_refs: 12
-sparse_route: abstain
+sparse_route: penalty
 single_element_guard: "off"
 occurrence_discount: true
 occurrence_tol: 3
