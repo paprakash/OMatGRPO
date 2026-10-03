@@ -49,16 +49,17 @@ python scripts/download_assets.py models --models arityguard_creatrelax   # or s
 ```
 
 Files go into the data directory, which is `omg/data` unless `--data_dir` or `OMATGRPO_DATA_DIR` says otherwise.
-Every file is checked against the sha256 listed in `scripts/download_assets.py` (for the CIFs of a structure set,
-against the repository's `SHA256SUMS`, whose entries for the set's summary and result file must match the pinned
-values). A file that is already present with the right hash is skipped. A file with a wrong hash stops the script
-and is left in place.
+Every file is checked against the sha256 listed in `scripts/download_assets.py`. The CIFs of a structure set come
+as one `cifs.zip`, because a Hugging Face repository holds at most 20,000 files. Its sha256 is checked against the
+repository's `SHA256SUMS`, whose entries for the set's summary and result file must match the pinned values, and
+the script unpacks it into `cifs/`. A file that is already present with the right hash is skipped. A file with a
+wrong hash stops the script and is left in place.
 
 ```
 prior/prior.safetensors, prior/train.yaml     the pretrained OMatG model every run starts from      (Hugging Face)
 mp_20/{train,val,test}.lmdb                   MP-20, from upstream OMatG at commit 9172203        (GitHub)
 models/<identifier>/final_model.safetensors   trained weights, and resolved_config.json            (Hugging Face, optional)
-structures/<identifier>/                      CIFs, structures_summary.csv, LeMat-GenBench JSON    (Hugging Face, optional)
+structures/<identifier>/                      cifs.zip (unpacked into cifs/), structures_summary.csv, LeMat-GenBench JSON  (Hugging Face, optional)
 references/mp20_comp_reference.pt             composition matrix of the MMD bonus                  (build_references.py)
 references/mp20_train_ref.json.gz             MP-20 training structures by formula, for creativity (build_references.py)
 ```
