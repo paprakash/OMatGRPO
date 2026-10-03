@@ -1,6 +1,6 @@
-# arityguard: Guarded, pre-creativity: OMatGRPO without the creativity term.
-# python -m omg.grpo.train --recipe configs/recipes/arityguard.yaml
-run_name: arityguard
+# sparseworst_creatrelax: Penalty routing: sparse-hull structures get the penalty instead of abstaining; no single-element guard.
+# python -m omg.grpo.train --config configs/runs/sparseworst_creatrelax.yaml
+run_name: sparseworst_creatrelax
 fields: pos,cell,species
 freeze_composition: false
 num_groups: 4
@@ -25,13 +25,13 @@ stability_cap: 1.0
 deep_below_hull: -0.1
 sparse_gate: true
 sparse_min_refs: 12
-sparse_route: abstain
-single_element_guard: "on"
+sparse_route: penalty
+single_element_guard: "off"
 occurrence_discount: true
 occurrence_tol: 3
 occurrence_zero: 6
 w_mmd: 0.4
 mmd_kernel: poly
 mmd_norm: minmax
-w_creat: 0.0
-creat_on_relaxed: false
+w_creat: 1.0
+creat_on_relaxed: true

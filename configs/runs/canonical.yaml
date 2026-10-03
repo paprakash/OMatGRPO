@@ -1,6 +1,6 @@
-# canonical_creatrelax: Discovery run: OMatGRPO without the single-element guard.
-# python -m omg.grpo.train --recipe configs/recipes/canonical_creatrelax.yaml
-run_name: canonical_creatrelax
+# canonical: Discovery, pre-creativity: no single-element guard, no creativity term.
+# python -m omg.grpo.train --config configs/runs/canonical.yaml
+run_name: canonical
 fields: pos,cell,species
 freeze_composition: false
 num_groups: 4
@@ -33,5 +33,5 @@ occurrence_zero: 6
 w_mmd: 0.4
 mmd_kernel: poly
 mmd_norm: minmax
-w_creat: 1.0
-creat_on_relaxed: true
+w_creat: 0.0
+creat_on_relaxed: false

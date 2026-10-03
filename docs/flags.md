@@ -1,13 +1,13 @@
 # Flag reference
 
 Generated from the parser (`omg.grpo.train.flag_table_markdown()`). `python -m omg.grpo.train --help` prints the
-same. Defaults are the OMatGRPO recipe. An unknown flag is an error.
+same. Defaults are the settings of the OMatGRPO run. An unknown flag is an error.
 
 **run**
 
 | flag | default | description |
 |---|---|---|
-| `--recipe` | `None` | YAML file with flag values (keys = flag names without --); command-line flags override it |
+| `--config` | `None` | YAML file with flag values (keys = flag names without --); command-line flags override it |
 | `--print_config` |  | print the resolved settings and exit |
 | `--run_name` | `omatgrpo` | name of the run (output folder and wandb run name) |
 | `--output_dir` | `None` | folder for checkpoints, the final model and the resolved config; None means outputs/<run_name> |

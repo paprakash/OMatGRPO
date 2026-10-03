@@ -63,15 +63,15 @@ The creativity term needs `average-minimum-distance` (CC BY-NC-SA 4.0). Its non-
 run with `--w_creat > 0`, although OMatGRPO's own code is MIT licensed.
 
 **The [`reward-hacking`](https://github.com/paprakash/OMatGRPO/tree/reward-hacking) branch.** The paper's
-reward-hacking appendix also studies reward variants that no recipe here uses. That branch is this code plus those
-variants, with their flags, tests and documentation: the displacement reward (mode 1, `--w_rmsd`, `--fmax`,
-`--fmax_schedule`, `--reward_offset`), the formation-energy reward (mode 2, `--reward_type formation`), the
-absolute-energy reward (`--reward_type absolute`) and the residual geometry term (mode 4, `--w_rmsd_geom`,
+reward-hacking appendix also studies reward variants that no run in `configs/runs/` uses. That branch is this code
+plus those variants, with their flags, tests and documentation: the displacement reward (mode 1, `--w_rmsd`,
+`--fmax`, `--fmax_schedule`, `--reward_offset`), the formation-energy reward (mode 2, `--reward_type formation`),
+the absolute-energy reward (`--reward_type absolute`) and the residual geometry term (mode 4, `--w_rmsd_geom`,
 `--rmsd_geom_clamp`). Use `main` for the paper's runs.
 
 ## Frozen-composition control
 
-The frozen-composition control (`configs/recipes/frozen_control.yaml`) samples one composition per group from the
+The frozen-composition control (`configs/runs/frozen_control.yaml`) samples one composition per group from the
 prior and learns only positions and lattice: `--fields pos,cell --freeze_composition true --alpha_pos 1
 --alpha_cell 1 --beta_kl_species 0 --relax_cell false --single_element_guard off --occurrence_discount false
 --w_mmd 0 --w_creat 0 --creat_on_relaxed false`. All members of a group share a composition there, so the

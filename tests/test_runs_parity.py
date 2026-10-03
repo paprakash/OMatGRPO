@@ -1,8 +1,8 @@
-"""Parity of the recipes with the runs in the paper.
+"""Parity of the run configs with the runs in the paper.
 
-For each identifier, configs/recipes/<identifier>.yaml resolved by omg.grpo.train must give the
+For each identifier, configs/runs/<identifier>.yaml resolved by omg.grpo.train must give the
 same module arguments, reward configuration and trainer settings as the original run. The
-reference (tests/data/recipe_goldens/<identifier>.json) was captured from the unmodified training
+reference (tests/data/run_goldens/<identifier>.json) was captured from the unmodified training
 entry point of the paper's runs (run_grpo_pilot.py) with the run's exact command line.
 
 The rename map from the original flags to the current ones lives only here.
@@ -15,7 +15,7 @@ import pytest
 from omg.grpo.train import module_kwargs, resolve_config
 
 REPO = Path(__file__).resolve().parents[1]
-GOLDENS = REPO / "tests" / "data" / "recipe_goldens"
+GOLDENS = REPO / "tests" / "data" / "run_goldens"
 IDENTIFIERS = ["arityguard_creatrelax", "canonical_creatrelax", "sparseworst_creatrelax",
                "arityguard", "canonical", "sparseworst", "frozen_control"]
 
@@ -63,7 +63,7 @@ NOT_SETTINGS = {"--config", "--ckpt_path", "--mmd_comp_reference", "--run_name",
 
 def _load(ident):
     golden = json.loads((GOLDENS / f"{ident}.json").read_text())
-    cfg = resolve_config(["--recipe", str(REPO / "configs" / "recipes" / f"{ident}.yaml")],
+    cfg = resolve_config(["--config", str(REPO / "configs" / "runs" / f"{ident}.yaml")],
                          env={"OMATGRPO_DATA_DIR": "/nonexistent/data"})
     return golden, cfg
 
@@ -139,14 +139,14 @@ def test_every_original_flag_maps_to_the_same_value(ident):
     assert cfg["rollouts"] * cfg["inner_epochs"] == int(max_steps.split("=")[1])
 
 
-def test_defaults_equal_the_omatgrpo_recipe():
+def test_defaults_equal_the_omatgrpo_run():
     base = resolve_config([], env={"OMATGRPO_DATA_DIR": "/nonexistent/data"})
-    _, recipe = _load("arityguard_creatrelax")
+    _, run = _load("arityguard_creatrelax")
     for key in ("run_name", "output_dir"):
-        base.pop(key), recipe.pop(key)
-    recipe.pop("recipe")
-    base.pop("recipe")
-    assert base == recipe
+        base.pop(key), run.pop(key)
+    run.pop("config")
+    base.pop("config")
+    assert base == run
 
 
 def test_unknown_flag_is_an_error():
@@ -154,13 +154,13 @@ def test_unknown_flag_is_an_error():
         resolve_config(["--no_such_flag", "1"], env={})
 
 
-def test_unknown_recipe_key_is_an_error(tmp_path):
+def test_unknown_config_key_is_an_error(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text("w_stabilty: 1.0\n")
     with pytest.raises(ValueError, match="unknown keys"):
-        resolve_config(["--recipe", str(bad)], env={})
+        resolve_config(["--config", str(bad)], env={})
 
 
-def test_command_line_overrides_recipe():
-    cfg = resolve_config(["--recipe", str(REPO / "configs/recipes/canonical.yaml"), "--w_mmd", "0"], env={})
+def test_command_line_overrides_config():
+    cfg = resolve_config(["--config", str(REPO / "configs/runs/canonical.yaml"), "--w_mmd", "0"], env={})
     assert cfg["w_mmd"] == 0.0 and cfg["mmd_comp_reference"] is None

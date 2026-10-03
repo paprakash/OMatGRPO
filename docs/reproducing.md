@@ -107,7 +107,7 @@ reports.
 
 ## Results of all runs
 
-Train the recipe, generate 2,500 structures from `final_model.safetensors`, and evaluate them as in the
+Train with the run's config, generate 2,500 structures from `final_model.safetensors`, and evaluate them as in the
 [quick start](../README.md#quick-start).
 The trained weights of all seven runs are also available (`python scripts/download_assets.py models`), and so are
 the exact structure sets the paper's numbers come from (`python scripts/download_assets.py structures`), which
@@ -115,7 +115,7 @@ the exact structure sets the paper's numbers come from (`python scripts/download
 
 | identifier | command | mSUN (% of 2,500) | single-element in mSUN | sparse hull in mSUN | compounds in mSUN |
 |---|---|---|---|---|---|
-| `arityguard_creatrelax` | `python -m omg.grpo.train --recipe configs/recipes/arityguard_creatrelax.yaml` | 1138 (45.5) | 4 (0.4%) | 23.5% | 1134 |
+| `arityguard_creatrelax` | `python -m omg.grpo.train --config configs/runs/arityguard_creatrelax.yaml` | 1138 (45.5) | 4 (0.4%) | 23.5% | 1134 |
 | `canonical_creatrelax` | same with `canonical_creatrelax.yaml` | 939 (37.6) | 502 (53.5%) | 63.4% | 437 |
 | `sparseworst_creatrelax` | same with `sparseworst_creatrelax.yaml` | 841 (33.6) | 1 (0.1%) | 3.6% | 840 |
 | `arityguard` | same with `arityguard.yaml` | 982 (39.3) | 20 (2.0%) | 14.1% | 962 |

@@ -64,7 +64,7 @@ OMatG also provides a package named `omg`.
 
 ```bash
 # train OMatGRPO
-python -m omg.grpo.train --recipe configs/recipes/arityguard_creatrelax.yaml
+python -m omg.grpo.train --config configs/runs/arityguard_creatrelax.yaml
 
 # generate 2,500 structures, relax them and export the valid ones as CIFs
 python scripts/eval/generate.py --checkpoint outputs/arityguard_creatrelax/final_model.safetensors \
@@ -87,12 +87,12 @@ To skip training, `python scripts/download_assets.py models` downloads the weigh
 `omg/data/models/arityguard_creatrelax/final_model.safetensors`. `scripts/slurm/` has SLURM templates for the three
 steps.
 
-## Recipes
+## Paper runs
 
-Each file in `configs/recipes/` holds every setting of one run in the paper. Flags on the command line override it,
+Each file in `configs/runs/` holds every setting of one run in the paper. Flags on the command line override it,
 and `--print_config` prints the resolved settings.
 
-| recipe | paper name | change from OMatGRPO |
+| run | paper name | change from OMatGRPO |
 |---|---|---|
 | `arityguard_creatrelax` | OMatGRPO | |
 | `canonical_creatrelax` | discovery | `--single_element_guard off` |
