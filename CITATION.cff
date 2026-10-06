@@ -30,9 +30,12 @@ preferred-citation:
   type: article
   title: "Reinforcement Learning on the Discrete Composition Channel of a Crystal Generator: Validated Gains and Reward Hacking"
   authors: *authors
-  journal: "arXiv preprint"
+  journal: "arXiv preprint arXiv:2610.03880"
   year: 2026
-  url: "https://arxiv.org/abs/TODO"   # TODO: arXiv identifier
+  url: "https://arxiv.org/abs/2610.03880"
+  identifiers:
+    - type: other
+      value: "arXiv:2610.03880"
 references:
   - type: conference-paper
     title: "Open Materials Generation with Stochastic Interpolants"

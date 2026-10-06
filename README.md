@@ -1,10 +1,10 @@
 # OMatGRPO
 
-Code for *Reinforcement Learning on the Discrete Composition Channel of a Crystal Generator: Validated Gains and
-Reward Hacking* by Pawan Prakash, Philipp Höllmer, Addis Fuhr, Peter Hirschfeld, P. Ganesh, Stefano Martiniani and
-Richard Hennig.
+Code for [*Reinforcement Learning on the Discrete Composition Channel of a Crystal Generator: Validated Gains and
+Reward Hacking*](https://arxiv.org/abs/2610.03880) by Pawan Prakash, Philipp Höllmer, Addis Fuhr, Peter
+Hirschfeld, P. Ganesh, Stefano Martiniani and Richard Hennig.
 
-[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-b31b1b.svg)](#citation)
+[![arXiv](https://img.shields.io/badge/arXiv-2610.03880-b31b1b.svg)](https://arxiv.org/abs/2610.03880)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-paprakash%2FOMatGRPO-ffd21e.svg)](https://huggingface.co/paprakash/OMatGRPO)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -127,13 +127,14 @@ lists the other code, models and data this project uses and their licenses.
 Please cite the paper and OMatG.
 
 ```bibtex
-@article{prakash2026omatgrpo,
-    title={Reinforcement Learning on the Discrete Composition Channel of a Crystal Generator: Validated Gains
-    and Reward Hacking},
-    author={Pawan Prakash and Philipp H{\"o}llmer and Addis Fuhr and Peter Hirschfeld and P. Ganesh and
-    Stefano Martiniani and Richard Hennig},
-    journal={arXiv link coming soon},
+@misc{prakash2026reinforcementlearningdiscretecomposition,
+    title={Reinforcement Learning on the Discrete Composition Channel of a Crystal Generator: Validated Gains and Reward Hacking},
+    author={Pawan Prakash and Philipp Höllmer and Addis Fuhr and Peter Hirschfeld and P. Ganesh and Stefano Martiniani and Richard Hennig},
     year={2026},
+    eprint={2610.03880},
+    archivePrefix={arXiv},
+    primaryClass={cs.LG},
+    url={https://arxiv.org/abs/2610.03880},
 }
 
 @inproceedings{hoellmer2025,
